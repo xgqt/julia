@@ -203,10 +203,6 @@ JL_PRIVATE_LIBS-$(USE_SYSTEM_LLVM) += libLLVM $(LLVM_SHARED_LIB_NAME)
 endif
 JL_PRIVATE_LIBS-$(USE_SYSTEM_LIBUNWIND) += libunwind
 
-ifeq ($(USE_SYSTEM_LIBM),0)
-JL_PRIVATE_LIBS-$(USE_SYSTEM_OPENLIBM) += libopenlibm
-endif
-
 JL_PRIVATE_LIBS-$(USE_SYSTEM_BLAS) += $(LIBBLASNAME)
 ifneq ($(LIBLAPACKNAME),$(LIBBLASNAME))
 JL_PRIVATE_LIBS-$(USE_SYSTEM_LAPACK) += $(LIBLAPACKNAME)
@@ -260,7 +256,7 @@ ifeq ($(BUNDLE_DEBUG_LIBS),1)
 	-$(INSTALL_M) $(build_bindir)/libjulia-debug.dll $(DESTDIR)$(bindir)/
 	-$(INSTALL_M) $(build_libdir)/libjulia-debug.dll.a $(DESTDIR)$(libdir)/
 endif
-	-$(INSTALL_M) $(build_bindir)/libopenlibm.dll.a $(DESTDIR)$(libdir)/
+
 else
 
 # Copy over .dSYM directories directly for Darwin

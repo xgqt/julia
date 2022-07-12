@@ -68,7 +68,6 @@ ifeq ($(XC_HOST),)
 else
 	@echo "const MACHINE = \"$(XC_HOST)\"" >> $@
 endif
-	@echo "const libm_name = \"$(LIBMNAME)\"" >> $@
 ifeq ($(USE_BLAS64), 1)
 	@echo "const USE_BLAS64 = true" >> $@
 else
@@ -228,18 +227,13 @@ $(build_bindir)/7z$(EXE):
 	ln -svf "$(7Z_PATH)" "$@"
 
 # the following excludes: libuv.a, libutf8proc.a
-
-ifneq ($(USE_SYSTEM_LIBM),0)
-$(eval $(call symlink_system_library,LIBM,$(LIBMNAME)))
-else ifneq ($(USE_SYSTEM_OPENLIBM),0)
-$(eval $(call symlink_system_library,OPENLIBM,$(LIBMNAME)))
-endif
-
+#$(eval $(call symlink_system_library,LIBM,$(LIBMNAME)))
 ifeq ($(APPLE_ARCH),arm64)
 $(eval $(call symlink_system_library,CSL,libgcc_s,1.1))
 else
 $(eval $(call symlink_system_library,CSL,libgcc_s,1))
 endif
+$(eval $(call symlink_system_library,CSL,libgcc_s,1))
 ifneq (,$(LIBGFORTRAN_VERSION))
 $(eval $(call symlink_system_library,CSL,libgfortran,$(LIBGFORTRAN_VERSION)))
 endif

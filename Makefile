@@ -182,7 +182,6 @@ endif
 ifeq ($(USE_GPL_LIBS), 1)
 JL_PRIVATE_LIBS-$(USE_SYSTEM_LIBSUITESPARSE) += libamd libbtf libcamd libccolamd libcholmod libcolamd libklu libldl librbio libspqr libsuitesparseconfig libumfpack
 endif
-JL_PRIVATE_LIBS-$(USE_SYSTEM_OPENLIBM) += libopenlibm
 JL_PRIVATE_LIBS-$(USE_SYSTEM_LIBBLASTRAMPOLINE) += libblastrampoline
 JL_PRIVATE_LIBS-$(USE_SYSTEM_PCRE) += libpcre2-8
 JL_PRIVATE_LIBS-$(USE_SYSTEM_DSFMT) += libdSFMT
@@ -203,6 +202,8 @@ ifeq ($(USE_LLVM_SHLIB),1)
 JL_PRIVATE_LIBS-$(USE_SYSTEM_LLVM) += libLLVM $(LLVM_SHARED_LIB_NAME)
 endif
 JL_PRIVATE_LIBS-$(USE_SYSTEM_LIBUNWIND) += libunwind
+
+JL_PRIVATE_LIBS-$(USE_SYSTEM_OPENLIBM) += libopenlibm
 
 JL_PRIVATE_LIBS-$(USE_SYSTEM_BLAS) += $(LIBBLASNAME)
 ifneq ($(LIBLAPACKNAME),$(LIBBLASNAME))

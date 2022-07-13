@@ -172,6 +172,7 @@ uses are listed in [`deps/$(LibName).version`](https://github.com/JuliaLang/juli
 - **[LLVM]** (14.0 + [patches](https://github.com/JuliaLang/llvm-project)) — compiler infrastructure (see [note below](#llvm)).
 - **[FemtoLisp]**            — packaged with Julia source, and used to implement the compiler front-end.
 - **[libuv]**  (custom fork) — portable, high-performance event-based I/O library.
+- **[OpenLibm]**             — portable libm library containing elementary math functions.
 - **[DSFMT]**                — fast Mersenne Twister pseudorandom number generator library.
 - **[OpenBLAS]**             — fast, open, and maintained [basic linear algebra subprograms (BLAS)]
 - **[LAPACK]**               — library of linear algebra routines for solving systems of simultaneous linear equations, least-squares solutions of linear systems of equations, eigenvalue problems, and singular value problems.
@@ -200,6 +201,7 @@ uses are listed in [`deps/$(LibName).version`](https://github.com/JuliaLang/juli
 [fetch]:        https://www.freebsd.org/cgi/man.cgi?fetch(1)
 [perl]:         https://www.perl.org
 [cmake]:        https://www.cmake.org
+[OpenLibm]:     https://github.com/JuliaLang/openlibm
 [DSFMT]:        https://github.com/MersenneTwister-Lab/dSFMT
 [OpenBLAS]:     https://github.com/xianyi/OpenBLAS
 [LAPACK]:       https://www.netlib.org/lapack

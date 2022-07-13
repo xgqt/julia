@@ -227,13 +227,12 @@ $(build_bindir)/7z$(EXE):
 	ln -svf "$(7Z_PATH)" "$@"
 
 # the following excludes: libuv.a, libutf8proc.a
-#$(eval $(call symlink_system_library,LIBM,$(LIBMNAME)))
+
 ifeq ($(APPLE_ARCH),arm64)
 $(eval $(call symlink_system_library,CSL,libgcc_s,1.1))
 else
 $(eval $(call symlink_system_library,CSL,libgcc_s,1))
 endif
-$(eval $(call symlink_system_library,CSL,libgcc_s,1))
 ifneq (,$(LIBGFORTRAN_VERSION))
 $(eval $(call symlink_system_library,CSL,libgfortran,$(LIBGFORTRAN_VERSION)))
 endif

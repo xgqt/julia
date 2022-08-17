@@ -826,8 +826,12 @@ GlobalRef(m::Module, s::Symbol) = GlobalRef(m, s, bitcast(Ptr{Nothing}, 0))
 # `_parse` must return an `svec` containing an `Expr` and the new offset as an
 # `Int`.
 #
-# The internal jl_parse which will call into Core._parse if not `nothing`.
+# The internal jl_parse will call into Core._parse if not `nothing`.
 _parse = nothing
+
+function set_parser(parser)
+    global _parse = parser
+end
 
 # support for deprecated uses of internal _apply function
 _apply(x...) = Core._apply_iterate(Main.Base.iterate, x...)

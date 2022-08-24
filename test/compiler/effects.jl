@@ -668,3 +668,61 @@ mksparamunused(x) = (SparamUnused(x); nothing)
 let src = code_typed1(mksparamunused, (Any,))
     @test count(isnew, src.code) == 0
 end
+
+# :const_prop_profitable_args bits
+# `Val`-profitability
+val_func(::Val{0}) = :zero
+val_func(::Val{1}) = "one"
+val_func(::Val{2}) = '2'
+let effects = Base.infer_effects((Int,)) do a
+                  Val(a)
+              end
+    @test Core.Compiler.is_const_prop_profitable_arg(effects, 2)
+end
+let effects = Base.infer_effects((Int,)) do a
+                  val_func(Val(a))
+              end
+    @test Core.Compiler.is_const_prop_profitable_arg(effects, 2)
+end
+let effects = Base.infer_effects((Int,)) do a
+                  Val(a) # unused, no profitability
+                  nothing
+              end
+    @test !Core.Compiler.is_const_prop_profitable_arg(effects, 2)
+end
+# branching-profitability
+let effects = Base.infer_effects((Bool,)) do c
+                  c ? nothing : missing
+              end
+    @test Core.Compiler.is_const_prop_profitable_arg(effects, 2)
+end
+# inter-procedural conversion of the :const_prop_profitable_args bits
+interprocedural_constprop_profitable_inner1(a) = Val(a)
+function interprocedural_constprop_profitable1(a, b)
+    v = interprocedural_constprop_profitable_inner1(b)
+    if isa(val_func(v), Symbol)
+        return Symbol
+    end
+    return a
+end
+let effects = Base.infer_effects(interprocedural_constprop_profitable1, (Type{Any},Int))
+    effects_inner = Base.infer_effects(interprocedural_constprop_profitable_inner1, (Int,))
+    @test Core.Compiler.is_const_prop_profitable_arg(effects_inner, 2)
+    @test !Core.Compiler.is_const_prop_profitable_arg(effects, 2)
+    @test Core.Compiler.is_const_prop_profitable_arg(effects, 3)
+end
+interprocedural_constprop_profitable_inner2(c) = c ? nothing : missing
+function interprocedural_constprop_profitable2(a, b)
+    v = interprocedural_constprop_profitable_inner2(b)
+    if v === nothing
+        return nothing
+    else
+        return a
+    end
+end
+let effects = Base.infer_effects(interprocedural_constprop_profitable2, (Int,Bool))
+    effects_inner = Base.infer_effects(interprocedural_constprop_profitable_inner2, (Bool,))
+    @test Core.Compiler.is_const_prop_profitable_arg(effects_inner, 2)
+    @test !Core.Compiler.is_const_prop_profitable_arg(effects, 2)
+    @test Core.Compiler.is_const_prop_profitable_arg(effects, 3)
+end

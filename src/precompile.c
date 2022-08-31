@@ -28,6 +28,8 @@ void jl_write_compiler_output(void)
         return;
     }
 
+    jl_task_wait_empty();
+
     void *native_code = NULL;
     if (!jl_options.incremental)
         native_code = jl_precompile(jl_options.compile_enabled == JL_OPTIONS_COMPILE_ALL);

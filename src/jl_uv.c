@@ -49,6 +49,7 @@ jl_mutex_t jl_uv_mutex;
 void jl_init_uv(void)
 {
     uv_async_init(jl_io_loop, &signal_async, jl_signal_async_cb);
+    uv_unref((uv_handle_t*)&signal_async);
     JL_MUTEX_INIT(&jl_uv_mutex); // a file-scope initializer can be used instead
 }
 
@@ -213,7 +214,9 @@ JL_DLLEXPORT int jl_process_events(void)
         if (jl_atomic_load_relaxed(&jl_uv_n_waiters) == 0 && jl_mutex_trylock(&jl_uv_mutex)) {
             JL_PROBE_RT_START_PROCESS_EVENTS(ct);
             loop->stop_flag = 0;
+            uv_ref((uv_handle_t*)&signal_async); // force the loop alive
             int r = uv_run(loop, UV_RUN_NOWAIT);
+            uv_unref((uv_handle_t*)&signal_async);
             JL_PROBE_RT_FINISH_PROCESS_EVENTS(ct);
             JL_UV_UNLOCK();
             return r;

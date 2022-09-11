@@ -452,7 +452,7 @@ end
 # Returns the return type. example: get_type(:(Base.strip("", ' ')), Main) returns (SubString{String}, true)
 function try_get_type(sym::Expr, fn::Module)
     val, found = get_value(sym, fn)
-    found && return Core.Typeof(val), found
+    found && return Base.TypeofValid(val), found
     if sym.head === :call
         # getfield call is special cased as the evaluation of getfield provides good type information,
         # is inexpensive and it is also performed in the complete_symbol function.
@@ -511,7 +511,7 @@ end
 
 function get_type(sym, fn::Module)
     val, found = get_value(sym, fn)
-    return found ? Core.Typeof(val) : Any, found
+    return found ? Base.TypeofValid(val) : Any, found
 end
 
 function get_type(T, found::Bool, default_any::Bool)
@@ -559,7 +559,7 @@ function complete_any_methods(ex_org::Expr, callee_module::Module, context_modul
         if !Base.isdeprecated(callee_module, name) && isdefined(callee_module, name) && !startswith(string(name), '#')
             func = getfield(callee_module, name)
             if !isa(func, Module)
-                funct = Core.Typeof(func)
+                funct = Base.TypeofValid(func)
                 if !in(funct, seen)
                     push!(seen, funct)
                     complete_methods!(out, funct, args_ex, kwargs_ex, MAX_ANY_METHOD_COMPLETIONS, false)
@@ -570,7 +570,7 @@ function complete_any_methods(ex_org::Expr, callee_module::Module, context_modul
                     if !Base.isdeprecated(callee_module2, name) && isdefined(callee_module2, name) && !startswith(string(name), '#')
                         func = getfield(callee_module, name)
                         if !isa(func, Module)
-                            funct = Core.Typeof(func)
+                            funct = Base.TypeofValid(func)
                             if !in(funct, seen)
                                 push!(seen, funct)
                                 complete_methods!(out, funct, args_ex, kwargs_ex, MAX_ANY_METHOD_COMPLETIONS, false)

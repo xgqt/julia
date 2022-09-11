@@ -1855,11 +1855,20 @@ See also: [`propertynames`](@ref), [`hasfield`](@ref).
 hasproperty(x, s::Symbol) = s in propertynames(x)
 
 """
+    TypeofValid(t)
+
+Behaves like `Core.Typeof`, except that a type with a free typevar does not get
+turned into `Type` and is thus valid in a signature without further UnionAll
+rewrapping.
+"""
+TypeofValid(@nospecialize(x)) = isa(x, Type) && !has_free_typevars(x) ? Type{x} : typeof(x)
+
+"""
     @invoke f(arg::T, ...; kwargs...)
 
 Provides a convenient way to call [`invoke`](@ref) by expanding
 `@invoke f(arg1::T1, arg2::T2; kwargs...)` to `invoke(f, Tuple{T1,T2}, arg1, arg2; kwargs...)`.
-When an argument's type annotation is omitted, it's replaced with `Core.Typeof` that argument.
+When an argument's type annotation is omitted, it's replaced with `Base.TypeofValid` that argument.
 To invoke a method where an argument is untyped or explicitly typed as `Any`, annotate the
 argument with `::Any`.
 
@@ -1867,7 +1876,7 @@ argument with `::Any`.
 
 ```jldoctest
 julia> @macroexpand @invoke f(x::T, y)
-:(Core.invoke(f, Tuple{T, Core.Typeof(y)}, x, y))
+:(Core.invoke(f, Tuple{T, Base.TypeofValid(y)}, x, y))
 
 julia> @invoke 420::Integer % Unsigned
 0x00000000000001a4
@@ -1892,7 +1901,7 @@ macro invoke(ex)
             push!(types.args, arg.args[2])
         else
             push!(out.args, arg)
-            push!(types.args, Expr(:call, GlobalRef(Core, :Typeof), arg))
+            push!(types.args, Expr(:call, GlobalRef(Base, :TypeofValid), arg))
         end
     end
     return esc(out)

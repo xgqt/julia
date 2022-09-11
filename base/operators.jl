@@ -1010,7 +1010,7 @@ struct ComposedFunction{O,I} <: Function
     outer::O
     inner::I
     ComposedFunction{O, I}(outer, inner) where {O, I} = new{O, I}(outer, inner)
-    ComposedFunction(outer, inner) = new{Core.Typeof(outer),Core.Typeof(inner)}(outer, inner)
+    ComposedFunction(outer, inner) = new{TypeofValid(outer),TypeofValid(inner)}(outer, inner)
 end
 
 (c::ComposedFunction)(x...; kw...) = call_composed(unwrap_composed(c), x, kw)
@@ -1228,7 +1228,7 @@ julia> my_add((1,2,3))
 """
 struct Splat{F} <: Function
     f::F
-    Splat(f) = new{Core.Typeof(f)}(f)
+    Splat(f) = new{TypeofValid(f)}(f)
 end
 (s::Splat)(args) = s.f(args...)
 print(io::IO, s::Splat) = print(io, "Splat(", s.f, ')')

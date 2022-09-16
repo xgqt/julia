@@ -2167,6 +2167,9 @@ function abstract_eval_value_expr(interp::AbstractInterpreter, e::Expr, sv::Unio
         if 1 <= n <= length(sv.sptypes)
             t = sv.sptypes[n]
         end
+        if !isa(t, Const)
+            merge_effects!(interp, sv, Effects(EFFECTS_TOTAL; nothrow=false))
+        end
         return t
     elseif head === :boundscheck
         return Bool

@@ -4633,3 +4633,15 @@ end |> only === Type{Float64}
 # Issue #46839: `abstract_invoke` should handle incorrect call type
 @test only(Base.return_types(()->invoke(BitSet, Any, x), ())) === Union{}
 @test only(Base.return_types(()->invoke(BitSet, Union{Tuple{Int32},Tuple{Int64}}, 1), ())) === Union{}
+
+# :static_parameter accuracy
+unknown_sparam_throw(::Union{Nothing, Type{T}}) where T = @isdefined(T) ? T::Type : nothing
+unknown_sparam_nothrow1(x::Ref{T}) where T = @isdefined(T) ? T::Type : nothing
+unknown_sparam_nothrow2(x::Ref{Ref{T}}) where T = @isdefined(T) ? T::Type : nothing
+@test only(Base.return_types(unknown_sparam_throw, (Type{Int},))) === Type{Int}
+@test_broken only(Base.return_types(unknown_sparam_throw, (Type{T} where T,))) === Type
+@test_broken only(Base.return_types(unknown_sparam_throw, (Nothing,))) === Nothing
+@test_broken only(Base.return_types(unknown_sparam_throw, (Union{Type{Int},Nothing},))) === Union{Nothing,Type{Int}}
+@test only(Base.return_types(unknown_sparam_throw, (Any,))) === Union{Nothing,Type}
+@test only(Base.return_types(unknown_sparam_nothrow1, (Ref,))) === Type
+@test only(Base.return_types(unknown_sparam_nothrow2, (Ref{Ref{T}} where T,))) === Type

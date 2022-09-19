@@ -367,6 +367,48 @@ function InferenceState(result::InferenceResult, cache::Symbol, interp::Abstract
     return InferenceState(result, src, cache, interp)
 end
 
+"""
+    has_non_dt_typevar(typ, tv::TypeVar) -> Bool
+
+This function is like `has_typevar`, except it only checks for `TypeVar`s that have passed
+through at least one `UnionAll`/`Union`/`Vararg` wrapper.
+
+It is used as a helper to determine whether type intersection is guaranteed to be able to
+find a value for a particular type parameter.
+A necessary condition for type intersection to not assign a parameter is that it only
+appears in a `Union[All]` and during subtyping some other union component (that does not
+constrain the type parameter) is selected.
+"""
+function has_non_dt_typevar(@nospecialize(typ), tv::TypeVar)
+    if isa(typ, UnionAll)
+        return has_typevar(typ.body, tv)
+    elseif isa(typ, Union)
+        return has_typevar(typ, tv)
+    elseif isa(typ, DataType)
+        has_free_typevars(typ) || return false
+        return any(@nospecialize(t)->has_non_dt_typevar(t, tv), typ.parameters)
+    end
+    return false
+end
+
+"""
+    MaybeUndefSP(typ)
+    is_maybeundefsp(typ) -> Bool
+    unwrap_maybeundefsp(typ) -> Any
+
+A special wrapper that represents a static parameter that could be undefined at runtime.
+This does not participate in the native type system nor the inference lattice,
+and it thus should be always unwrapped when performing any type or lattice operations on it.
+"""
+struct MaybeUndefSP
+    typ
+    MaybeUndefSP(@nospecialize typ) = new(typ)
+end
+is_maybeundefsp(@nospecialize typ) = isa(typ, MaybeUndefSP)
+unwrap_maybeundefsp(@nospecialize typ) = isa(typ, MaybeUndefSP) ? typ.typ : typ
+is_maybeundefsp(sptypes::Vector{Any}, idx::Int) = is_maybeundefsp(sptypes[idx])
+unwrap_maybeundefsp(sptypes::Vector{Any}, idx::Int) = unwrap_maybeundefsp(sptypes[idx])
+
 function sptypes_from_meth_instance(linfo::MethodInstance)
     toplevel = !isa(linfo.def, Method)
     if !toplevel && isempty(linfo.sparam_vals) && isa(linfo.def.sig, UnionAll)
@@ -392,13 +434,20 @@ function sptypes_from_meth_instance(linfo::MethodInstance)
                 temp = temp.body
             end
             sigtypes = (temp::DataType).parameters
+            maybe_undef = false
             for j = 1:length(sigtypes)
                 sⱼ = sigtypes[j]
                 if isType(sⱼ) && sⱼ.parameters[1] === vᵢ
                     # if this parameter came from `arg::Type{T}`,
                     # then `arg` is more precise than `Type{T} where lb<:T<:ub`
                     ty = fieldtype(linfo.specTypes, j)
+                    if !isconstType(ty)
+                        ty = MaybeUndefSP(ty)
+                    end
                     @goto ty_computed
+                end
+                if !maybe_undef
+                    maybe_undef |= has_non_dt_typevar(sⱼ, vᵢ)
                 end
             end
             ub = v.ub
@@ -420,6 +469,9 @@ function sptypes_from_meth_instance(linfo::MethodInstance)
             else
                 tv = TypeVar(v.name, lb, ub)
                 ty = UnionAll(tv, Type{tv})
+            end
+            if maybe_undef
+                ty = MaybeUndefSP(ty)
             end
         elseif isvarargtype(v)
             ty = Int

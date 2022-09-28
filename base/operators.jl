@@ -185,7 +185,7 @@ Not the inverse of `isless`! Test whether `x` is greater than `y`, according to
 a fixed total order compatible with `min`.
 
 Defined with `isless`, this function is usually `isless(y, x)`, but `NaN` and
-[`missing`](@ref) are ordered as smaller than any ordinary value with `missing`
+[`missing`](@ref) are ordered as smaller than any regular value with `missing`
 smaller than `NaN`.
 
 So `isless` defines an ascending total order with `NaN` and `missing` as the
@@ -513,8 +513,6 @@ julia> identity("Well, what did you expect?")
 identity(@nospecialize x) = x
 
 +(x::Number) = x
--(x) = Int8(-1)*x
--(x, y) = x + (-y)
 *(x::Number) = x
 (&)(x::Integer) = x
 (|)(x::Integer) = x
@@ -615,9 +613,7 @@ julia> inv(A) * x
  -7.0
 ```
 """
-\(x, y) = inv(x) * y
-
-/(x, y) = x * inv(y)
+\(x,y) = adjoint(adjoint(y)/adjoint(x))
 
 # Core <<, >>, and >>> take either Int or UInt as second arg. Signed shift
 # counts can shift in either direction, and are translated here to unsigned
@@ -1310,7 +1306,7 @@ Some collections follow a slightly different definition. For example,
 use [`haskey`](@ref) or `k in keys(dict)`. For these collections, the result
 is always a `Bool` and never `missing`.
 
-To determine whether an item is not in a given collection, see [`:∉`](@ref).
+To determine whether an item is not in a given collection, see [`∉`](@ref).
 You may also negate the `in` by doing `!(a in b)` which is logically similar to "not in".
 
 When broadcasting with `in.(items, collection)` or `items .∈ collection`, both

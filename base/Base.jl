@@ -439,6 +439,10 @@ end
 include(mod::Module, _path::AbstractString) = _include(identity, mod, _path)
 include(mapexpr::Function, mod::Module, _path::AbstractString) = _include(mapexpr, mod, _path)
 
+# External libraries vendored into Base
+Core.println("JuliaSyntax/src/JuliaSyntax.jl")
+include(@__MODULE__, "JuliaSyntax/src/JuliaSyntax.jl")
+
 end_base_include = time_ns()
 
 const _sysimage_modules = PkgId[]
@@ -513,8 +517,6 @@ function __init__()
         MAX_NUM_PRECOMPILE_FILES[] = parse(Int, ENV["JULIA_MAX_NUM_PRECOMPILE_FILES"])
     end
     if get(ENV, "JULIA_USE_NEW_PARSER", "false") == "true"
-        JuliaSyntax = require(PkgId(
-            UUID((0x70703baa_626e_46a2, 0xa12c_08ffd08c73b4)), "JuliaSyntax"))
         JuliaSyntax.enable_in_core!()
     end
     nothing

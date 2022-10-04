@@ -156,13 +156,12 @@ if Artifacts !== nothing
     """
 end
 
-JuliaSyntax = get(Base.loaded_modules,
-          Base.PkgId(Base.UUID("70703baa-626e-46a2-a12c-08ffd08c73b4"), "JuliaSyntax"),
-          nothing)
-if JuliaSyntax !== nothing
-    precompile_script *= read(joinpath(pkgdir(JuliaSyntax),
-                                       "sysimage", "precompile_exec.jl"), String) * "\n"
-end
+juliasyntax_path = joinpath(Sys.BINDIR, "..", "share", "julia", "base", "JuliaSyntax")
+precompile_script *= """
+    using Base: JuliaSyntax
+    $(read(joinpath(juliasyntax_path, "sysimage", "precompile.jl"), String))
+    precompile_JuliaSyntax(@__MODULE__(), $(repr(juliasyntax_path)))
+    """
 
 Pkg = get(Base.loaded_modules,
           Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"),

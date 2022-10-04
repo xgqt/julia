@@ -32,6 +32,7 @@ New library functions
 New library features
 --------------------
 
+* A `CartesianIndex` is now treated as a "scalar" for broadcasting ([#47044]).
 
 Standard library changes
 ------------------------

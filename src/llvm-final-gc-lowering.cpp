@@ -373,7 +373,8 @@ bool FinalLowerGC::runOnFunction(Function &F)
                 replaceInstruction(CI, lowerQueueGCBinding(CI, F), it);
             }
             else if (callee == safepointFunc) {
-                replaceInstruction(CI, lowerSafepoint(CI, F, pgcstack), it);
+                lowerSafepoint(CI, F, pgcstack);
+                it = CI->eraseFromParent();
             }
             else {
                 ++it;

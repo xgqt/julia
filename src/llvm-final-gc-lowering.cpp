@@ -27,6 +27,7 @@ STATISTIC(GetGCFrameSlotCount, "Number of lowered getGCFrameSlotFunc intrinsics"
 STATISTIC(GCAllocBytesCount, "Number of lowered GCAllocBytesFunc intrinsics");
 STATISTIC(QueueGCRootCount, "Number of lowered queueGCRootFunc intrinsics");
 STATISTIC(QueueGCBindingCount, "Number of lowered queueGCBindingFunc intrinsics");
+STATISTIC(SafepointCount, "Number of lowered safepoint intrinsics");
 
 using namespace llvm;
 
@@ -71,6 +72,9 @@ private:
 
     // Lowers a `julia.queue_gc_binding` intrinsic.
     Value *lowerQueueGCBinding(CallInst *target, Function &F);
+
+    // Lowers a `julia.safepoint` intrinsic.
+    Value *lowerSafepoint(CallInst *target, Function &F, Value *pgcstack);
 };
 
 Value *FinalLowerGC::lowerNewGCFrame(CallInst *target, Function &F)
@@ -201,6 +205,17 @@ Value *FinalLowerGC::lowerQueueGCBinding(CallInst *target, Function &F)
     return target;
 }
 
+Value *FinalLowerGC::lowerSafepoint(CallInst *target, Function &F, Value *pgcstack)
+{
+    ++SafepointCount;
+    assert(target->arg_size() == 0);
+    IRBuilder<> builder(target->getContext());
+    builder.SetInsertPoint(target);
+    Value* ptls = get_current_ptls_from_task(builder, get_current_task_from_pgcstack(builder, pgcstack), nullptr);
+    Value* load = builder.CreateLoad(getSizeTy(builder.getContext()), get_current_signal_page_from_ptls(builder, ptls, nullptr), true);
+    return load;
+}
+
 Value *FinalLowerGC::lowerGCAllocBytes(CallInst *target, Function &F)
 {
     ++GCAllocBytesCount;
@@ -321,6 +336,7 @@ bool FinalLowerGC::runOnFunction(Function &F)
     auto GCAllocBytesFunc = getOrNull(jl_intrinsics::GCAllocBytes);
     auto queueGCRootFunc = getOrNull(jl_intrinsics::queueGCRoot);
     auto queueGCBindingFunc = getOrNull(jl_intrinsics::queueGCBinding);
+    auto safepointFunc = getOrNull(jl_intrinsics::safepoint);
 
     // Lower all calls to supported intrinsics.
     for (BasicBlock &BB : F) {
@@ -355,6 +371,9 @@ bool FinalLowerGC::runOnFunction(Function &F)
             }
             else if (callee == queueGCBindingFunc) {
                 replaceInstruction(CI, lowerQueueGCBinding(CI, F), it);
+            }
+            else if (callee == safepointFunc) {
+                replaceInstruction(CI, lowerSafepoint(CI, F, pgcstack), it);
             }
             else {
                 ++it;

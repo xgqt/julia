@@ -3,6 +3,7 @@
 #include <utility>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/Support/Debug.h>
+#include <llvm/IR/Attributes.h>
 #include <llvm/IR/DebugLoc.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/MDBuilder.h>
@@ -235,8 +236,20 @@ static inline void emit_signal_fence(llvm::IRBuilder<> &builder)
 
 static inline void emit_gc_safepoint(llvm::IRBuilder<> &builder, llvm::Value *ptls, llvm::MDNode *tbaa)
 {
+    using namespace llvm;
     emit_signal_fence(builder);
-    builder.CreateLoad(getSizeTy(builder.getContext()), get_current_signal_page_from_ptls(builder, ptls, tbaa), true);
+    Module *M = builder.GetInsertBlock()->getModule();
+    LLVMContext &C = builder.getContext();
+    // inline jlsafepoint_func->realize(M)
+    Function *F = M->getFunction("julia.safepoint");
+    if (!F) {
+        FunctionType *FT = FunctionType::get(Type::getVoidTy(C), false);
+        F = Function::Create(FT, Function::ExternalLinkage, "julia.safepoint", M);
+        F->addAttributeAtIndex(AttributeList::FunctionIndex, Attribute::get(C, Attribute::InaccessibleMemOnly));
+        F->addAttributeAtIndex(AttributeList::FunctionIndex, Attribute::get(C, Attribute::ReadOnly));
+    }
+
+    builder.CreateCall(F);
     emit_signal_fence(builder);
 }
 

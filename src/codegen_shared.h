@@ -243,13 +243,13 @@ static inline void emit_gc_safepoint(llvm::IRBuilder<> &builder, llvm::Value *pt
     // inline jlsafepoint_func->realize(M)
     Function *F = M->getFunction("julia.safepoint");
     if (!F) {
-        FunctionType *FT = FunctionType::get(Type::getVoidTy(C), false);
+        auto T_ppjlvalue = JuliaType::get_ppjlvalue_ty(builder.getContext());
+        FunctionType *FT = FunctionType::get(Type::getVoidTy(C), {T_ppjlvalue}, false);
         F = Function::Create(FT, Function::ExternalLinkage, "julia.safepoint", M);
-        F->addAttributeAtIndex(AttributeList::FunctionIndex, Attribute::get(C, Attribute::InaccessibleMemOnly));
-        F->addAttributeAtIndex(AttributeList::FunctionIndex, Attribute::get(C, Attribute::ReadOnly));
+        F->addFnAttr(Attribute::InaccessibleMemOrArgMemOnly);
     }
 
-    builder.CreateCall(F);
+    builder.CreateCall(F, {ptls});
     emit_signal_fence(builder);
 }
 

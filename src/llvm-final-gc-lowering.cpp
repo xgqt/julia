@@ -74,7 +74,7 @@ private:
     Value *lowerQueueGCBinding(CallInst *target, Function &F);
 
     // Lowers a `julia.safepoint` intrinsic.
-    Value *lowerSafepoint(CallInst *target, Function &F, Value *pgcstack);
+    Value *lowerSafepoint(CallInst *target, Function &F);
 };
 
 Value *FinalLowerGC::lowerNewGCFrame(CallInst *target, Function &F)
@@ -205,13 +205,13 @@ Value *FinalLowerGC::lowerQueueGCBinding(CallInst *target, Function &F)
     return target;
 }
 
-Value *FinalLowerGC::lowerSafepoint(CallInst *target, Function &F, Value *pgcstack)
+Value *FinalLowerGC::lowerSafepoint(CallInst *target, Function &F)
 {
     ++SafepointCount;
-    assert(target->arg_size() == 0);
+    assert(target->arg_size() == 1);
     IRBuilder<> builder(target->getContext());
     builder.SetInsertPoint(target);
-    Value* ptls = get_current_ptls_from_task(builder, get_current_task_from_pgcstack(builder, pgcstack), nullptr);
+    Value* ptls = target->getOperand(0);
     Value* load = builder.CreateLoad(getSizeTy(builder.getContext()), get_current_signal_page_from_ptls(builder, ptls, nullptr), true);
     return load;
 }
@@ -373,7 +373,7 @@ bool FinalLowerGC::runOnFunction(Function &F)
                 replaceInstruction(CI, lowerQueueGCBinding(CI, F), it);
             }
             else if (callee == safepointFunc) {
-                lowerSafepoint(CI, F, pgcstack);
+                lowerSafepoint(CI, F);
                 it = CI->eraseFromParent();
             }
             else {

@@ -22,7 +22,7 @@ being used for this purpose alone.
 """
 module Timings
 
-using Core.Compiler: -, +, :, Vector, length, first, empty!, push!, pop!, @inline,
+using Core.Compiler: -, +, :, >, Vector, length, first, empty!, push!, pop!, @inline,
     @inbounds, copy, backtrace
 
 # What we record for any given frame we infer during type inference.
@@ -48,7 +48,7 @@ end
 _typeinf_identifier(frame::InferenceFrameInfo) = frame
 
 """
-    Core.Compiler.Timing(mi_info, start_time, ...)
+    Core.Compiler.Timings.Timing(mi_info, start_time, ...)
 
 Internal type containing the timing result for running type inference on a single
 MethodInstance.
@@ -71,7 +71,7 @@ _time_ns() = ccall(:jl_hrtime, UInt64, ())  # Re-implemented here because Base n
 const _finished_timings = Timing[]
 
 """
-    Core.Compiler.clear_and_fetch_timings()
+    Core.Compiler.Timings.clear_and_fetch_timings()
 
 Empty out the previously recorded type inference timings (`Core.Compiler._timings`).
 """
@@ -124,7 +124,7 @@ const _timings = Timing[]
 @inline function enter_new_timer(frame)
     # Very first thing, stop the active timer: get the current time and add in the
     # time since it was last started to its aggregate exclusive time.
-    if length(_timings) !== 0
+    if length(_timings) > 0
         stop_time = _time_ns()
         parent_timer = _timings[end]
         accum_time = stop_time - parent_timer.cur_start_time

@@ -3514,8 +3514,8 @@ end
     timing = time_inference() do
         @eval _Recursive.f(Base.inferencebarrier(5))
     end
-    @test 2 <= max_depth(timing) <= 3  # root -> f (-> +)
-    @test 2 <= length(flatten_times(timing)) <= 3  # root, f, +
+    @test 1 <= max_depth(timing) <= 2  # f (-> +)
+    @test 1 <= length(flatten_times(timing)) <= 2  # f, +
 
     # Functions inferred with multiple constants
     @eval module C

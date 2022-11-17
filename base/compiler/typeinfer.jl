@@ -70,13 +70,12 @@ _time_ns() = ccall(:jl_hrtime, UInt64, ())  # Re-implemented here because Base n
 # GUARDED BY: jl_typeinf_profiling_lock
 const _finished_timings = Timing[]
 
-# TODO: Consider removing this function
 """
-    Core.Compiler.clear_timings()
+    Core.Compiler.clear_and_fetch_timings()
 
 Empty out the previously recorded type inference timings (`Core.Compiler._timings`).
 """
-function clear_timings()
+function clear_and_fetch_timings()
     ccall(:jl_typeinf_profiling_lock_begin, Cvoid, ())
     try
         timings_copy = copy(_finished_timings)
@@ -125,7 +124,7 @@ const _timings = Timing[]
 @inline function enter_new_timer(frame)
     # Very first thing, stop the active timer: get the current time and add in the
     # time since it was last started to its aggregate exclusive time.
-    if !isempty(_timings)
+    if length(_timings) !== 0
         stop_time = _time_ns()
         parent_timer = _timings[end]
         accum_time = stop_time - parent_timer.cur_start_time
@@ -180,7 +179,7 @@ end
     new_timer = pop!(_timings)
     Core.Compiler.@assert new_timer.mi_info.mi === expected_mi_info.mi
 
-    is_profile_root = isempty(_timings)
+    is_profile_root = length(_timings) === 0
 
     accum_time = stop_time - new_timer.cur_start_time
     # Add in accum_time ("modify" the immutable struct)

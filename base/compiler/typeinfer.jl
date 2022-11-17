@@ -142,7 +142,9 @@ end
 @inline function enter_new_timer(frame)
     # Very first thing, stop the active timer: get the current time and add in the
     # time since it was last started to its aggregate exclusive time.
-    close_current_timer()
+    if !isempty(_timings)
+        close_current_timer()
+    end
 
     mi_info = _typeinf_identifier(frame)
 

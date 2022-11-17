@@ -79,15 +79,22 @@ Empty out the previously recorded type inference timings (`Core.Compiler._timing
 function clear_timings()
     ccall(:jl_typeinf_profiling_lock_begin, Cvoid, ())
     try
+        timings_copy = copy(_finished_timings)
         empty!(_finished_timings)
+        return timings_copy
     finally
         ccall(:jl_typeinf_profiling_lock_end, Cvoid, ())
     end
     return nothing
 end
 
-function finish_timing()
-    push!(_finished_timings)
+function finish_timing_profile(timing::Timing)
+    ccall(:jl_typeinf_profiling_lock_begin, Cvoid, ())
+    try
+        push!(_finished_timings, timing)
+    finally
+        ccall(:jl_typeinf_profiling_lock_end, Cvoid, ())
+    end
 end
 
 # We keep a stack of the Timings for each of the MethodInstances currently being timed.
@@ -115,40 +122,29 @@ const _timings = Timing[]
 # end
 # reset_timings()
 
-# (This is split into a function so that it can be called both in this module, at the top
-# of `enter_new_timer()`, and once at the Very End of the operation, by whoever started
-# the operation and called `reset_timings()`.)
-# NOTE: the @inline annotations here are not to make it faster, but to reduce the gap between
-# timer manipulations and the tasks we're timing.
-@inline function close_current_timer()
-    stop_time = _time_ns()
-    parent_timer = _timings[end]
-    accum_time = stop_time - parent_timer.cur_start_time
-
-    # Add in accum_time ("modify" the immutable struct)
-    @inbounds begin
-        _timings[end] = Timing(
-            parent_timer.mi_info,
-            parent_timer.start_time,
-            parent_timer.cur_start_time,
-            parent_timer.time + accum_time,
-            parent_timer.children,
-            parent_timer.bt,
-        )
-    end
-    return nothing
-end
-
 @inline function enter_new_timer(frame)
     # Very first thing, stop the active timer: get the current time and add in the
     # time since it was last started to its aggregate exclusive time.
     if !isempty(_timings)
-        close_current_timer()
+        stop_time = _time_ns()
+        parent_timer = _timings[end]
+        accum_time = stop_time - parent_timer.cur_start_time
+
+        # Add in accum_time ("modify" the immutable struct)
+        @inbounds begin
+            _timings[end] = Timing(
+                parent_timer.mi_info,
+                parent_timer.start_time,
+                parent_timer.cur_start_time,
+                parent_timer.time + accum_time,
+                parent_timer.children,
+                parent_timer.bt,
+            )
+        end
     end
 
-    mi_info = _typeinf_identifier(frame)
-
     # Start the new timer right before returning
+    mi_info = _typeinf_identifier(frame)
     push!(_timings, Timing(mi_info, UInt64(0)))
     len = length(_timings)
     new_timer = @inbounds _timings[len]

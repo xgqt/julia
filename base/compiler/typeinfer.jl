@@ -66,6 +66,30 @@ Timing(mi_info, start_time) = Timing(mi_info, start_time, start_time, UInt64(0),
 
 _time_ns() = ccall(:jl_hrtime, UInt64, ())  # Re-implemented here because Base not yet available.
 
+# A buffer of completed type inference timing trees.
+# GUARDED BY: jl_typeinf_profiling_lock
+const _finished_timings = Timing[]
+
+# TODO: Consider removing this function
+"""
+    Core.Compiler.clear_timings()
+
+Empty out the previously recorded type inference timings (`Core.Compiler._timings`).
+"""
+function clear_timings()
+    ccall(:jl_typeinf_profiling_lock_begin, Cvoid, ())
+    try
+        empty!(_finished_timings)
+    finally
+        ccall(:jl_typeinf_profiling_lock_end, Cvoid, ())
+    end
+    return nothing
+end
+
+function finish_timing()
+    push!(_finished_timings)
+end
+
 # We keep a stack of the Timings for each of the MethodInstances currently being timed.
 # Since type inference currently operates via a depth-first search (during abstract
 # evaluation), this vector operates like a call stack. The last node in _timings is the
@@ -74,26 +98,22 @@ _time_ns() = ccall(:jl_hrtime, UInt64, ())  # Re-implemented here because Base n
 # call structure through type inference is recorded. (It's recorded as a tree, not a graph,
 # because we create a new node for duplicates.)
 const _timings = Timing[]
-# ROOT() is an empty function used as the top-level Timing node to measure all time spent
-# *not* in type inference during a given recording trace. It is used as a "dummy" node.
-function ROOT() end
-const ROOTmi = Core.Compiler.specialize_method(
-    first(Core.Compiler.methods(ROOT)), Tuple{typeof(ROOT)}, Core.svec())
-"""
-    Core.Compiler.reset_timings()
 
-Empty out the previously recorded type inference timings (`Core.Compiler._timings`), and
-start the ROOT() timer again. `ROOT()` measures all time spent _outside_ inference.
-"""
-function reset_timings()
-    empty!(_timings)
-    push!(_timings, Timing(
-        # The MethodInstance for ROOT(), and default empty values for other fields.
-        InferenceFrameInfo(ROOTmi, 0x0, Any[], Any[Core.Const(ROOT)], 1),
-        _time_ns()))
-    return nothing
-end
-reset_timings()
+# """
+#     Core.Compiler.reset_timings()
+# 
+# Empty out the previously recorded type inference timings (`Core.Compiler._timings`), and
+# start the ROOT() timer again. `ROOT()` measures all time spent _outside_ inference.
+# """
+# function reset_timings()
+#     empty!(_timings)
+#     push!(_timings, Timing(
+#         # The MethodInstance for ROOT(), and default empty values for other fields.
+#         InferenceFrameInfo(ROOTmi, 0x0, Any[], Any[Core.Const(ROOT)], 1),
+#         _time_ns()))
+#     return nothing
+# end
+# reset_timings()
 
 # (This is split into a function so that it can be called both in this module, at the top
 # of `enter_new_timer()`, and once at the Very End of the operation, by whoever started
@@ -162,8 +182,7 @@ end
     new_timer = pop!(_timings)
     Core.Compiler.@assert new_timer.mi_info.mi === expected_mi_info.mi
 
-    # Prepare to unwind one level of the stack and record in the parent
-    parent_timer = _timings[end]
+    is_profile_root = isempty(_timings)
 
     accum_time = stop_time - new_timer.cur_start_time
     # Add in accum_time ("modify" the immutable struct)
@@ -173,24 +192,31 @@ end
         new_timer.cur_start_time,
         new_timer.time + accum_time,
         new_timer.children,
-        parent_timer.mi_info.mi === ROOTmi ? backtrace() : nothing,
+        is_profile_root ? backtrace() : nothing,
     )
-    # Record the final timing with the original parent timer
-    push!(parent_timer.children, new_timer)
 
-    # And finally restart the parent timer:
-    len = length(_timings)
-    @inbounds begin
-        _timings[len] = Timing(
-            parent_timer.mi_info,
-            parent_timer.start_time,
-            _time_ns(),
-            parent_timer.time,
-            parent_timer.children,
-            parent_timer.bt,
-        )
+    # Prepare to unwind one level of the stack and record in the parent
+    if is_profile_root
+        finish_timing_profile(new_timer)
+    else
+        parent_timer = _timings[end]
+
+        # Record the final timing with the original parent timer
+        push!(parent_timer.children, new_timer)
+
+        # And finally restart the parent timer:
+        len = length(_timings)
+        @inbounds begin
+            _timings[len] = Timing(
+                parent_timer.mi_info,
+                parent_timer.start_time,
+                _time_ns(),
+                parent_timer.time,
+                parent_timer.children,
+                parent_timer.bt,
+            )
+        end
     end
-
     return nothing
 end
 

@@ -7,7 +7,6 @@
 
 using std::vector;
 
-
 jl_mutex_t typeinf_profiling_lock;
 
 // Guarded by jl_typeinf_profiling_lock.

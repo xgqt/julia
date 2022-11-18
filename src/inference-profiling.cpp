@@ -8,7 +8,7 @@
 using std::vector;
 
 
-jl_mutex_t jl_typeinf_profiling_lock;
+jl_mutex_t typeinf_profiling_lock;
 
 // Guarded by jl_typeinf_profiling_lock.
 vector<jl_value_t*> inference_profiling_results;
@@ -19,7 +19,7 @@ extern "C" {
 
 JL_DLLEXPORT jl_array_t* jl_typeinf_profiling_clear_and_fetch()
 {
-    JL_LOCK(&jl_typeinf_profiling_lock);
+    JL_LOCK(&typeinf_profiling_lock);
 
     size_t len = inference_profiling_results.size();
 
@@ -28,18 +28,18 @@ JL_DLLEXPORT jl_array_t* jl_typeinf_profiling_clear_and_fetch()
 
     inference_profiling_results.clear();
 
-    JL_UNLOCK(&jl_typeinf_profiling_lock);
+    JL_UNLOCK(&typeinf_profiling_lock);
 
     return out;
 }
 
 JL_DLLEXPORT void jl_typeinf_profiling_push_timing(jl_value_t *timing)
 {
-    JL_LOCK(&jl_typeinf_profiling_lock);
+    JL_LOCK(&typeinf_profiling_lock);
 
     inference_profiling_results.push_back(timing);
 
-    JL_UNLOCK(&jl_typeinf_profiling_lock);
+    JL_UNLOCK(&typeinf_profiling_lock);
 }
 
 }  // extern "C"

@@ -69,7 +69,11 @@ _time_ns() = ccall(:jl_hrtime, UInt64, ())  # Re-implemented here because Base n
 """
     Core.Compiler.Timings.clear_and_fetch_timings()
 
-Empty out the previously recorded type inference timings (`Core.Compiler._timings`).
+Return, then clear, the previously recorded type inference timings (`Core.Compiler._timings`).
+
+This fetches a vector of all of the type inference timings that have _finished_ as of this call. Note
+that there may be concurrent invocations of inference that are still running in another thread, but
+which haven't yet been added to this buffer. Those can be fetched in a future call.
 """
 function clear_and_fetch_timings()
     ccall(:jl_typeinf_profiling_clear_and_fetch, Vector{Any}, ())

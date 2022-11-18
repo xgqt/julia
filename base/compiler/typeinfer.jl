@@ -66,34 +66,17 @@ Timing(mi_info, start_time) = Timing(mi_info, start_time, start_time, UInt64(0),
 
 _time_ns() = ccall(:jl_hrtime, UInt64, ())  # Re-implemented here because Base not yet available.
 
-# A buffer of completed type inference timing trees.
-# GUARDED BY: jl_typeinf_profiling_lock
-const _finished_timings = Timing[]
-
 """
     Core.Compiler.Timings.clear_and_fetch_timings()
 
 Empty out the previously recorded type inference timings (`Core.Compiler._timings`).
 """
 function clear_and_fetch_timings()
-    ccall(:jl_typeinf_profiling_lock_begin, Cvoid, ())
-    try
-        timings_copy = copy(_finished_timings)
-        empty!(_finished_timings)
-        return timings_copy
-    finally
-        ccall(:jl_typeinf_profiling_lock_end, Cvoid, ())
-    end
-    return nothing
+    ccall(:jl_typeinf_profiling_clear_and_fetch, Vector{Any}, ())
 end
 
 function finish_timing_profile(timing::Timing)
-    ccall(:jl_typeinf_profiling_lock_begin, Cvoid, ())
-    try
-        push!(_finished_timings, timing)
-    finally
-        ccall(:jl_typeinf_profiling_lock_end, Cvoid, ())
-    end
+    ccall(:jl_typeinf_profiling_push_timing, Cvoid, (Any,), timing)
 end
 
 # We keep a stack of the Timings for each of the MethodInstances currently being timed.

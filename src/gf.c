@@ -3457,20 +3457,6 @@ JL_DLLEXPORT void jl_typeinf_lock_end(void)
     JL_UNLOCK(&typeinf_lock);
 }
 
-// Locks for type inference profiling
-
-jl_mutex_t jl_typeinf_profiling_lock;
-
-JL_DLLEXPORT void jl_typeinf_profiling_lock_begin(void)
-{
-    JL_LOCK(&jl_typeinf_profiling_lock);
-}
-
-JL_DLLEXPORT void jl_typeinf_profiling_lock_end(void)
-{
-    JL_UNLOCK(&jl_typeinf_profiling_lock);
-}
-
 #ifdef __cplusplus
 }
 #endif

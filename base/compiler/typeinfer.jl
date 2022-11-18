@@ -53,7 +53,7 @@ _typeinf_identifier(frame::InferenceFrameInfo) = frame
 Internal type containing the timing result for running type inference on a single
 MethodInstance.
 """
-struct Timing
+mutable struct Timing
     mi_info::InferenceFrameInfo
     start_time::UInt64
     cur_start_time::UInt64
@@ -105,22 +105,6 @@ end
 # because we create a new node for duplicates.)
 const _timings = Timing[]
 
-# """
-#     Core.Compiler.reset_timings()
-# 
-# Empty out the previously recorded type inference timings (`Core.Compiler._timings`), and
-# start the ROOT() timer again. `ROOT()` measures all time spent _outside_ inference.
-# """
-# function reset_timings()
-#     empty!(_timings)
-#     push!(_timings, Timing(
-#         # The MethodInstance for ROOT(), and default empty values for other fields.
-#         InferenceFrameInfo(ROOTmi, 0x0, Any[], Any[Core.Const(ROOT)], 1),
-#         _time_ns()))
-#     return nothing
-# end
-# reset_timings()
-
 @inline function enter_new_timer(frame)
     # Very first thing, stop the active timer: get the current time and add in the
     # time since it was last started to its aggregate exclusive time.
@@ -129,17 +113,8 @@ const _timings = Timing[]
         parent_timer = _timings[end]
         accum_time = stop_time - parent_timer.cur_start_time
 
-        # Add in accum_time ("modify" the immutable struct)
-        @inbounds begin
-            _timings[end] = Timing(
-                parent_timer.mi_info,
-                parent_timer.start_time,
-                parent_timer.cur_start_time,
-                parent_timer.time + accum_time,
-                parent_timer.children,
-                parent_timer.bt,
-            )
-        end
+        # Add in accum_time
+        parent_timer.time += accum_time
     end
 
     # Start the new timer right before returning
@@ -147,19 +122,12 @@ const _timings = Timing[]
     push!(_timings, Timing(mi_info, UInt64(0)))
     len = length(_timings)
     new_timer = @inbounds _timings[len]
+
     # Set the current time _after_ appending the node, to try to exclude the
     # overhead from measurement.
     start = _time_ns()
-
-    @inbounds begin
-        _timings[len] = Timing(
-            new_timer.mi_info,
-            start,
-            start,
-            new_timer.time,
-            new_timer.children,
-        )
-    end
+    new_timer.start_time = start
+    new_timer.current_start_time = start
 
     return nothing
 end
@@ -183,14 +151,10 @@ end
 
     accum_time = stop_time - new_timer.cur_start_time
     # Add in accum_time ("modify" the immutable struct)
-    new_timer = Timing(
-        new_timer.mi_info,
-        new_timer.start_time,
-        new_timer.cur_start_time,
-        new_timer.time + accum_time,
-        new_timer.children,
-        is_profile_root ? backtrace() : nothing,
-    )
+    new_timer.time += accum_time
+    if is_profile_root
+        new_timer.bt = backtrace()
+    end
 
     # Prepare to unwind one level of the stack and record in the parent
     if is_profile_root
@@ -202,17 +166,7 @@ end
         push!(parent_timer.children, new_timer)
 
         # And finally restart the parent timer:
-        len = length(_timings)
-        @inbounds begin
-            _timings[len] = Timing(
-                parent_timer.mi_info,
-                parent_timer.start_time,
-                _time_ns(),
-                parent_timer.time,
-                parent_timer.children,
-                parent_timer.bt,
-            )
-        end
+        parent_timer.cur_start_time = _time_ns()
     end
     return nothing
 end

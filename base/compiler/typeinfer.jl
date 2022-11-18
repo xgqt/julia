@@ -114,7 +114,7 @@ const _timings = Timing[]
     # overhead from measurement.
     start = _time_ns()
     new_timer.start_time = start
-    new_timer.current_start_time = start
+    new_timer.cur_start_time = start
 
     return nothing
 end

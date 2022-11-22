@@ -884,6 +884,9 @@ ascending order.
 
 See also [`sortperm!`](@ref), [`partialsortperm`](@ref), [`invperm`](@ref), [`indexin`](@ref).
 
+!!! compat "Julia 1.9"
+    The method accepting `dims` requires at least Julia 1.9.
+
 # Examples
 ```jldoctest
 julia> v = [3, 1, 2];
@@ -933,6 +936,9 @@ end
 
 Like [`sortperm`](@ref), but accepts a preallocated index vector `ix`.  If `initialized` is `false`
 (the default), `ix` is initialized to contain the values `1:length(v)`.
+
+!!! compat "Julia 1.9"
+    The method accepting `dims` requires at least Julia 1.9.
 
 # Examples
 ```jldoctest

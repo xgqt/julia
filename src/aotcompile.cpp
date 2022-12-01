@@ -60,7 +60,7 @@
 
 using namespace llvm;
 
-#include "jitlayers.h"
+#include "sysimg.h"
 #include "julia_assert.h"
 
 #define DEBUG_TYPE "julia_aotcompile"
@@ -70,30 +70,6 @@ STATISTIC(CreateNativeCalls, "Number of jl_create_native calls made");
 STATISTIC(CreateNativeMethods, "Number of methods compiled for jl_create_native");
 STATISTIC(CreateNativeMax, "Max number of methods compiled at once for jl_create_native");
 STATISTIC(CreateNativeGlobals, "Number of globals compiled for jl_create_native");
-
-template<class T> // for GlobalObject's
-static T *addComdat(T *G)
-{
-#if defined(_OS_WINDOWS_)
-    if (!G->isDeclaration()) {
-        // add __declspec(dllexport) to everything marked for export
-        if (G->getLinkage() == GlobalValue::ExternalLinkage)
-            G->setDLLStorageClass(GlobalValue::DLLExportStorageClass);
-        else
-            G->setDLLStorageClass(GlobalValue::DefaultStorageClass);
-    }
-#endif
-    return G;
-}
-
-
-typedef struct {
-    orc::ThreadSafeModule M;
-    std::vector<GlobalValue*> jl_sysimg_fvars;
-    std::vector<GlobalValue*> jl_sysimg_gvars;
-    std::map<jl_code_instance_t*, std::tuple<uint32_t, uint32_t>> jl_fvar_map;
-    std::vector<void*> jl_value_to_llvm;
-} jl_native_code_desc_t;
 
 extern "C" JL_DLLEXPORT
 void jl_get_function_id_impl(void *native_code, jl_code_instance_t *codeinst,
@@ -136,24 +112,6 @@ GlobalValue* jl_get_llvm_function_impl(void *native_code, uint32_t idx)
         return data->jl_sysimg_fvars[idx];
     else
         return NULL;
-}
-
-
-static void emit_offset_table(Module &mod, const std::vector<GlobalValue*> &vars, StringRef name, Type *T_psize)
-{
-    // Emit a global variable with all the variable addresses.
-    // The cloning pass will convert them into offsets.
-    size_t nvars = vars.size();
-    std::vector<Constant*> addrs(nvars);
-    for (size_t i = 0; i < nvars; i++) {
-        Constant *var = vars[i];
-        addrs[i] = ConstantExpr::getBitCast(var, T_psize);
-    }
-    ArrayType *vars_type = ArrayType::get(T_psize, nvars);
-    new GlobalVariable(mod, vars_type, true,
-                       GlobalVariable::ExternalLinkage,
-                       ConstantArray::get(vars_type, addrs),
-                       name);
 }
 
 static bool is_safe_char(unsigned char c)
@@ -476,6 +434,7 @@ void jl_dump_native_impl(void *native_code,
         const char *asm_fname,
         const char *sysimg_data, size_t sysimg_len)
 {
+    bool imaging_mode = imaging_default() || jl_options.outputo;
     JL_TIMING(NATIVE_DUMP);
     jl_native_code_desc_t *data = (jl_native_code_desc_t*)native_code;
     auto TSCtx = data->M.getContext();
@@ -562,27 +521,19 @@ void jl_dump_native_impl(void *native_code,
     NewPM optimizer{std::move(TM), getOptLevel(jl_options.opt_level), OptimizationOptions::defaults(true, true)};
 #endif
 
-    Type *T_size;
-    if (sizeof(size_t) == 8)
-        T_size = Type::getInt64Ty(Context);
-    else
-        T_size = Type::getInt32Ty(Context);
-    Type *T_psize = T_size->getPointerTo();
-
     // add metadata information
-    if (imaging_default() || jl_options.outputo) {
-        emit_offset_table(*dataM, data->jl_sysimg_gvars, "jl_sysimg_gvars", T_psize);
-        emit_offset_table(*dataM, data->jl_sysimg_fvars, "jl_sysimg_fvars", T_psize);
-
-        // reflect the address of the jl_RTLD_DEFAULT_handle variable
-        // back to the caller, so that we can check for consistency issues
-        GlobalValue *jlRTLD_DEFAULT_var = jl_emit_RTLD_DEFAULT_var(dataM);
-        addComdat(new GlobalVariable(*dataM,
-                                     jlRTLD_DEFAULT_var->getType(),
-                                     true,
-                                     GlobalVariable::ExternalLinkage,
-                                     jlRTLD_DEFAULT_var,
-                                     "jl_RTLD_DEFAULT_handle_pointer"));
+    unsigned threads = 1;
+    if (imaging_mode) {
+        add_sysimage_globals(*dataM, data);
+        threads = std::max(llvm::hardware_concurrency().compute_thread_count(), 1u);
+        // Partitioning will rely on having at least one fvar and one gvar per partition, so don't let
+        // number of threads exceed this bound. Also hedge against some of those gvars being allocated
+        // with fvars due to initialization constraints
+        threads = std::min(threads, (unsigned)std::min(data->jl_sysimg_fvars.size(), data->jl_sysimg_gvars.size()) / 5);
+        const char *env_threads = getenv("JULIA_SYSIMG_THREADS");
+        if (env_threads) {
+            threads = std::max(atoi(env_threads), 1);
+        }
     }
 
     // do the actual work
@@ -632,14 +583,24 @@ void jl_dump_native_impl(void *native_code,
     sysimageM->setStackProtectorGuard(dataM->getStackProtectorGuard());
     sysimageM->setOverrideStackAlignment(dataM->getOverrideStackAlignment());
 #endif
+    if (imaging_mode) {
+        bool has_veccall = false;
+        if (auto md = dataM->getModuleFlag("julia.mv.veccall")) {
+            has_veccall = cast<ConstantInt>(cast<ConstantAsMetadata>(md)->getValue())->isOneValue();
+        }
+        add_sysimage_targets(*sysimageM, has_veccall, threads, data->jl_sysimg_fvars.size(), data->jl_sysimg_gvars.size());
+    }
     data->M = orc::ThreadSafeModule(); // free memory for data->M
 
     if (sysimg_data) {
         Constant *data = ConstantDataArray::get(Context,
             ArrayRef<uint8_t>((const unsigned char*)sysimg_data, sysimg_len));
-        addComdat(new GlobalVariable(*sysimageM, data->getType(), false,
+        auto sysdata = new GlobalVariable(*sysimageM, data->getType(), false,
                                      GlobalVariable::ExternalLinkage,
-                                     data, "jl_system_image_data"))->setAlignment(Align(64));
+                                     data, "jl_system_image_data");
+        sysdata->setAlignment(Align(64));
+        addComdat(sysdata);
+        auto T_size = sysimageM->getDataLayout().getIntPtrType(sysimageM->getContext());
         Constant *len = ConstantInt::get(T_size, sysimg_len);
         addComdat(new GlobalVariable(*sysimageM, len->getType(), true,
                                      GlobalVariable::ExternalLinkage,

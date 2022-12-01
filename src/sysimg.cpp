@@ -5,7 +5,7 @@
 
 using namespace llvm;
 
-#define ENABLE_MULTITHREADED_SYSIMG
+// #define ENABLE_MULTITHREADED_SYSIMG
 
 extern Optional<bool> always_have_fma(Function&);
 
@@ -193,7 +193,7 @@ static void annotate_clones(Module &M) {
             groups.push_back(i);
             groups_targets[i].second = true;
         } else {
-            groups_targets[spec.base].second = false;
+            groups_targets[spec.base].first.push_back(i);
         }
     }
     CallGraph graph(M);

@@ -340,7 +340,8 @@ void *jl_create_native_impl(jl_array_t *methods, LLVMOrcThreadSafeModuleRef llvm
         //Safe b/c context is locked by params
         GlobalVariable *G = cast<GlobalVariable>(clone.getModuleUnlocked()->getNamedValue(global));
         G->setInitializer(ConstantPointerNull::get(cast<PointerType>(G->getValueType())));
-        G->setLinkage(GlobalVariable::InternalLinkage);
+        G->setLinkage(GlobalVariable::ExternalLinkage);
+        G->setVisibility(GlobalValue::HiddenVisibility);
         data->jl_sysimg_gvars.push_back(G);
     }
     CreateNativeGlobals += gvars.size();
@@ -362,7 +363,8 @@ void *jl_create_native_impl(jl_array_t *methods, LLVMOrcThreadSafeModuleRef llvm
         //Safe b/c context is locked by params
         for (GlobalObject &G : clone.getModuleUnlocked()->global_objects()) {
             if (!G.isDeclaration()) {
-                G.setLinkage(Function::InternalLinkage);
+                G.setLinkage(Function::ExternalLinkage);
+                G.setVisibility(GlobalValue::HiddenVisibility);
                 makeSafeName(G);
                 addComdat(&G);
 #if defined(_OS_WINDOWS_) && defined(_CPU_X86_64_)

@@ -335,6 +335,110 @@ static inline std::vector<T*> consume_gv(Module &M, const char *name, bool allow
     return res;
 }
 
+static bool verify_reloc_slots(ConstantDataArray &idxs, ConstantArray &reloc_slots, bool clone_all, uint32_t start, uint32_t end) {
+    bool bad = false;
+    auto nreloc_val = cast<ConstantInt>(reloc_slots.getOperand(0));
+    auto nreloc = nreloc_val->getZExtValue();
+    if (nreloc * 2 + 1 != reloc_slots.getNumOperands()) {
+        bad = true;
+        dbgs() << "ERROR: Bad reloc slot count\n";
+    }
+    uint32_t reloc_i = 0;
+    for (uint32_t i = start; i < end; i++) {
+        auto idx = idxs.getElementAsInteger(i);
+        if (!clone_all) {
+            if (idx & jl_sysimg_tag_mask) {
+                idx &= jl_sysimg_val_mask;
+            } else {
+                continue;
+            }
+        }
+        bool found = false;
+        //This is for error recovery
+        uint32_t prev_i = reloc_i;
+        for (; reloc_i < nreloc; reloc_i++) {
+            //we add 1 here to skip the length (processor just bumps the source pointer)
+            auto reloc_idx = cast<ConstantInt>(reloc_slots.getOperand(reloc_i * 2 + 1))->getZExtValue();
+            if (reloc_idx == idx) {
+                found = true;
+                // dbgs() << "Found reloc slot for " << idx << "\n";
+            }
+            else if (reloc_idx > idx) {
+                break;
+            }
+        }
+        if (!found) {
+            bad = true;
+            dbgs() << "ERROR: Missing reloc slot for " << idx << "\n";
+            // try to recover to find more errors
+            reloc_i = prev_i;
+        }
+    }
+    // if (!bad) {
+    //     dbgs() << "Verified " << end - start << " reloc slots\n";
+    // }
+    return bad;
+}
+
+//This mimics the logic during sysimage loading, so we fail earlier
+//if multiversioning doesn't fit what the loader expects
+// currently just checks reloc_slots against dispatch_fvars_idxs
+static bool verify_multiversioning(Module &M) {
+    std::string suffix;
+    if (auto suffix_md = M.getModuleFlag("julia.mv.suffix")) {
+        suffix = cast<MDString>(suffix_md)->getString().str();
+    }
+    bool bad = false;
+    auto reloc_slots = M.getGlobalVariable("jl_dispatch_reloc_slots" + suffix);
+    auto clone_idxs = M.getGlobalVariable("jl_dispatch_fvars_idxs" + suffix);
+    if (!reloc_slots) {
+        dbgs() << "ERROR: Missing jl_dispatch_reloc_slots" << suffix << "\n";
+        bad = true;
+    }
+    if (!clone_idxs) {
+        dbgs() << "ERROR: Missing jl_dispatch_fvars_idxs" << suffix << "\n";
+        bad = true;
+    }
+    auto cidxs = dyn_cast<ConstantDataArray>(clone_idxs->getInitializer());
+    if (!cidxs) {
+        dbgs() << "ERROR: jl_dispatch_fvars_idxs" << suffix << " is not a constant data array\n";
+        bad = true;
+    }
+    auto rslots = dyn_cast<ConstantArray>(reloc_slots->getInitializer());
+    if (!rslots) {
+        dbgs() << "ERROR: jl_dispatch_reloc_slots" << suffix << " is not a constant array\n";
+        bad = true;
+    }
+    if (cidxs && rslots) {
+        auto specs = jl_get_llvm_clone_targets();
+        uint32_t tag_len = cidxs->getElementAsInteger(0);
+        uint32_t offset = 1;
+        for (uint32_t i = 0; i < specs.size(); i++) {
+            uint32_t len = jl_sysimg_val_mask & tag_len;
+            bool clone_all = (tag_len & jl_sysimg_tag_mask);
+            if (clone_all != (i == 0 || specs[i].flags & JL_TARGET_CLONE_ALL)) {
+                dbgs() << "ERROR: clone_all mismatch for spec " << i << "\n";
+                dbgs() << "  " << clone_all << " != " << (i == 0 || specs[i].flags & JL_TARGET_CLONE_ALL) << "\n";
+                bad = true;
+            }
+            bad |= verify_reloc_slots(*cidxs, *rslots, clone_all, offset + !clone_all, offset + len);
+            if (jl_sysimg_tag_mask & tag_len) {
+                offset += len + 1;
+            } else {
+                offset += len + 2;
+            }
+            if (i != specs.size() - 1) {
+                if (offset > cidxs->getNumElements()) {
+                    dbgs() << "ERROR: out of bounds cloneidxs length " << i + 1 << "\n";
+                    bad = true;
+                }
+                tag_len = cidxs->getElementAsInteger(offset - 1);
+            }
+        }
+    }
+    return bad;
+}
+
 // Collect basic information about targets and functions.
 CloneCtx::CloneCtx(Module &M, function_ref<LoopInfo&(Function&)> GetLI, function_ref<CallGraph&()> GetCG, bool allow_bad_fvars)
     : tbaa_const(tbaa_make_child_with_context(M.getContext(), "jtbaa_const", nullptr, true).first),
@@ -1159,6 +1263,8 @@ static bool runMultiVersioning(Module &M, function_ref<LoopInfo&(Function&)> Get
     // At this point, we should have fixed up all the uses of the cloned functions
     // and collected all the shared/target-specific relocations.
     clone.emit_metadata();
+
+    assert(!verify_multiversioning(M));
 #ifdef JL_VERIFY_PASSES
     assert(!verifyModule(M, &errs()));
 #endif

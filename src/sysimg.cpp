@@ -1,5 +1,20 @@
+#include "llvm-version.h"
+
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Verifier.h>
 #include <llvm/ADT/SmallSet.h>
 #include <llvm/Analysis/CallGraph.h>
+#if JL_LLVM_VERSION >= 140000
+#include <llvm/MC/TargetRegistry.h>
+#else
+#include <llvm/Support/TargetRegistry.h>
+#endif
+#include <llvm/Bitcode/BitcodeReader.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+#include <llvm/Bitcode/BitcodeWriterPass.h>
+#include <llvm/Transforms/Utils/Cloning.h>
+#include <llvm/Transforms/Utils/ModuleUtils.h>
+#include <llvm/Passes/PassBuilder.h>
 
 #include "sysimg.h"
 
@@ -307,8 +322,6 @@ static void annotate_clones(Module &M) {
 }
 
 void add_sysimage_targets(Module &M, bool has_veccall, uint32_t nshards, uint32_t nfvars, uint32_t ngvars) {
-    //We don't do parallelism yet, lie to the interface
-    nshards = 1;
     // Generate `jl_dispatch_target_ids`
     auto specs = jl_get_llvm_clone_targets();
     const uint32_t base_flags = has_veccall ? JL_TARGET_VEC_CALL : 0;
@@ -455,4 +468,575 @@ void add_sysimage_globals(Module &M, jl_native_code_desc_t *data) {
                                     GlobalVariable::ExternalLinkage,
                                     jlRTLD_DEFAULT_var,
                                     "jl_RTLD_DEFAULT_handle_pointer"));
+}
+
+static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionType *FT)
+{
+    Function *target = M.getFunction(alias);
+    if (!target) {
+        target = Function::Create(FT, Function::ExternalLinkage, alias, M);
+    }
+    Function *interposer = Function::Create(FT, Function::WeakAnyLinkage, name, M);
+    appendToCompilerUsed(M, {interposer});
+
+    llvm::IRBuilder<> builder(BasicBlock::Create(M.getContext(), "top", interposer));
+    SmallVector<Value *, 4> CallArgs;
+    for (auto &arg : interposer->args())
+        CallArgs.push_back(&arg);
+    auto val = builder.CreateCall(target, CallArgs);
+    builder.CreateRet(val);
+}
+
+static std::unique_ptr<TargetMachine> createTM(TargetMachine &Orig) {
+    return std::unique_ptr<TargetMachine>(
+                                            Orig.getTarget().createTargetMachine(
+                                                Orig.getTargetTriple().getTriple(),
+                                                Orig.getTargetCPU(),
+                                                Orig.getTargetFeatureString(),
+                                                Orig.Options,
+                                                Orig.getRelocationModel(),
+                                                Orig.getCodeModel(),
+                                                Orig.getOptLevel()));
+}
+
+static void add_output_impl(TargetMachine &DumpTM, Module &M,
+                std::vector<std::string> &outputs,
+                DumpOutput unopt, DumpOutput opt, DumpOutput obj, DumpOutput assm,
+                bool inject_crt, unsigned outputs_offset,
+                unsigned unopt_offset, unsigned opt_offset, unsigned obj_offset, unsigned assm_offset) {
+    uint64_t start = 0;
+    uint64_t end = 0;
+    assert(!verifyModule(M, &errs()));
+
+    auto &Context = M.getContext();
+
+    auto TM = createTM(DumpTM);
+
+    std::array<std::string, 4> bufs;
+
+    if (!unopt.Name.empty()) {
+        SmallVector<char, 0> unopt_bc_Buffer;
+        raw_svector_ostream unopt_bc_OS(unopt_bc_Buffer);
+        ModulePassManager MPM;
+        MPM.addPass(BitcodeWriterPass(unopt_bc_OS));
+        PassBuilder PB;
+        AnalysisManagers AM(*TM, PB, OptimizationLevel::O0);
+        MPM.run(M, AM.MAM);
+        bufs[0] = { unopt_bc_Buffer.data(), unopt_bc_Buffer.size() };
+    }
+    if (opt.Name.empty() && obj.Name.empty() && assm.Name.empty())
+        return;
+
+    #ifndef JL_USE_NEW_PM
+        legacy::PassManager optimizer;
+        addTargetPasses(&optimizer, TM->getTargetTriple(), TM->getTargetIRAnalysis());
+        addOptimizationPasses(&optimizer, jl_options.opt_level, true, true);
+        addMachinePasses(&optimizer, jl_options.opt_level);
+    #else
+        NewPM optimizer{std::move(TM), getOptLevel(jl_options.opt_level), OptimizationOptions::defaults(true, true)};
+    #endif
+    start = jl_hrtime();
+    optimizer.run(M);
+    end = jl_hrtime();
+    dbgs() << "Optimization time: " << (end - start) / 1e9 << "s\n";
+
+    assert(!verifyModule(M, &errs()));
+
+    if (inject_crt) {
+        // We would like to emit an alias or an weakref alias to redirect these symbols
+        // but LLVM doesn't let us emit a GlobalAlias to a declaration...
+        // So for now we inject a definition of these functions that calls our runtime
+        // functions. We do so after optimization to avoid cloning these functions.
+        injectCRTAlias(M, "__gnu_h2f_ieee", "julia__gnu_h2f_ieee",
+                FunctionType::get(Type::getFloatTy(Context), { Type::getHalfTy(Context) }, false));
+        injectCRTAlias(M, "__extendhfsf2", "julia__gnu_h2f_ieee",
+                FunctionType::get(Type::getFloatTy(Context), { Type::getHalfTy(Context) }, false));
+        injectCRTAlias(M, "__gnu_f2h_ieee", "julia__gnu_f2h_ieee",
+                FunctionType::get(Type::getHalfTy(Context), { Type::getFloatTy(Context) }, false));
+        injectCRTAlias(M, "__truncsfhf2", "julia__gnu_f2h_ieee",
+                FunctionType::get(Type::getHalfTy(Context), { Type::getFloatTy(Context) }, false));
+        injectCRTAlias(M, "__truncdfhf2", "julia__truncdfhf2",
+                FunctionType::get(Type::getHalfTy(Context), { Type::getDoubleTy(Context) }, false));
+    }
+
+    if (!opt.Name.empty()) {
+        SmallVector<char, 0> opt_bc_Buffer;
+        raw_svector_ostream opt_bc_OS(opt_bc_Buffer);
+        ModulePassManager MPM;
+        MPM.addPass(BitcodeWriterPass(opt_bc_OS));
+        PassBuilder PB;
+        AnalysisManagers AM(*TM, PB, OptimizationLevel::O0);
+        MPM.run(M, AM.MAM);
+        bufs[1] = { opt_bc_Buffer.data(), opt_bc_Buffer.size() };
+    }
+    
+    if (!obj.Name.empty()) {
+        SmallVector<char, 0> obj_Buffer;
+        raw_svector_ostream obj_OS(obj_Buffer);
+        legacy::PassManager emitter;
+        addTargetPasses(&emitter, TM->getTargetTriple(), TM->getTargetIRAnalysis());
+        if (TM->addPassesToEmitFile(emitter, obj_OS, nullptr, CGFT_ObjectFile, false))
+            jl_safe_printf("ERROR: target does not support generation of object files\n");
+        start = jl_hrtime();
+        emitter.run(M);
+        end = jl_hrtime();
+        dbgs() << "Object emission time: " << (end - start) / 1e9 << "s\n";
+        bufs[2] = { obj_Buffer.data(), obj_Buffer.size() };
+    }
+
+    if (!assm.Name.empty()) {
+        SmallVector<char, 0> asm_Buffer;
+        raw_svector_ostream asm_OS(asm_Buffer);
+        legacy::PassManager emitter;
+        addTargetPasses(&emitter, TM->getTargetTriple(), TM->getTargetIRAnalysis());
+        if (TM->addPassesToEmitFile(emitter, asm_OS, nullptr, CGFT_AssemblyFile, false))
+            jl_safe_printf("ERROR: target does not support generation of assembly files\n");
+        start = jl_hrtime();
+        emitter.run(M);
+        end = jl_hrtime();
+        dbgs() << "Assembly emission time: " << (end - start) / 1e9 << "s\n";
+        bufs[3] = { asm_Buffer.data(), asm_Buffer.size() };
+    }
+
+    if (!unopt.Name.empty()) {
+        outputs[outputs_offset] = std::move(bufs[0]);
+        unopt.Archive[unopt_offset] = NewArchiveMember(MemoryBufferRef(outputs[outputs_offset], unopt.Name));
+        outputs_offset++;
+    }
+    if (!opt.Name.empty()) {
+        outputs[outputs_offset] = std::move(bufs[1]);
+        opt.Archive[opt_offset] = NewArchiveMember(MemoryBufferRef(outputs[outputs_offset], opt.Name));
+        outputs_offset++;
+    }
+    if (!obj.Name.empty()) {
+        outputs[outputs_offset] = std::move(bufs[2]);
+        obj.Archive[obj_offset] = NewArchiveMember(MemoryBufferRef(outputs[outputs_offset], obj.Name));
+        outputs_offset++;
+    }
+    if (!assm.Name.empty()) {
+        outputs[outputs_offset] = std::move(bufs[3]);
+        assm.Archive[assm_offset] = NewArchiveMember(MemoryBufferRef(outputs[outputs_offset], assm.Name));
+        outputs_offset++;
+    }
+}
+
+static size_t getFunctionWeight(const Function &F)
+{
+    size_t weight = 1;
+    for (const BasicBlock &BB : F) {
+        weight += BB.size();
+    }
+    // more basic blocks = more complex than just sum of insts,
+    // add some weight to it
+    weight += F.size();
+    if (F.hasFnAttribute("julia.mv.clones")) {
+        weight *= F.getFnAttribute("julia.mv.clones").getValueAsString().count(',') + 1;
+    }
+    return weight;
+}
+
+struct DisjointSetPartitioner {
+    struct Node {
+        GlobalValue *GV;
+        size_t weight;
+        unsigned parent;
+    };
+
+    SmallVector<Node> nodes;
+    DenseMap<GlobalValue *, unsigned> nodeMap;
+    unsigned roots;
+
+    void add(GlobalValue *GV) {
+        unsigned idx = nodes.size();
+        nodeMap[GV] = idx;
+        nodes.push_back({GV, 0, idx});
+        if (auto F = dyn_cast<Function>(GV)) {
+            nodes.back().weight = getFunctionWeight(*F);
+        } else {
+            nodes.back().weight = 1;
+        }
+        ++roots;
+    }
+
+    unsigned root(unsigned i) {
+        unsigned j = i;
+        while (nodes[j].parent != j) {
+            j = nodes[j].parent;
+        }
+        while (nodes[i].parent != j) {
+            unsigned k = nodes[i].parent;
+            nodes[i].parent = j;
+            i = k;
+        }
+        return j;
+    }
+
+    void merge(unsigned i, unsigned j) {
+        i = root(i);
+        j = root(j);
+        if (i == j)
+            return;
+        nodes[j].parent = i;
+        nodes[i].weight += nodes[j].weight;
+        --roots;
+    }
+};
+
+struct Partition {
+    StringSet<> GVNames;
+    StringMap<uint32_t> fvars;
+    StringMap<uint32_t> gvars;
+};
+
+bool verify_partitioning(const SmallVectorImpl<Partition> &partitions, const Module &M) {
+    StringMap<uint32_t> GVNames;
+    bool bad = false;
+    for (uint32_t i = 0; i < partitions.size(); i++) {
+        for (auto &name : partitions[i].GVNames) {
+            if (GVNames.count(name.getKey())) {
+                bad = true;
+                dbgs() << "Duplicate global name " << name.getKey() << " in partitions " << i << " and " << GVNames[name.getKey()] << "\n";
+            }
+            GVNames[name.getKey()] = i;
+        }
+        dbgs() << "partition: " << i << " fvars: " << partitions[i].fvars.size() << " gvars: " << partitions[i].gvars.size() << "\n";
+    }
+    for (auto &GV : M.globals()) {
+        if (GV.isDeclaration()) {
+            if (GVNames.count(GV.getName())) {
+                bad = true;
+                dbgs() << "Global " << GV.getName() << " is a declaration but is in partition " << GVNames[GV.getName()] << "\n";
+            }
+        } else {
+            if (!GVNames.count(GV.getName())) {
+                bad = true;
+                dbgs() << "Global " << GV << " not in any partition\n";
+            }
+        }
+    }
+    return !bad;
+}
+
+//We can't have functions that are defined in one module but whose address
+//is used in a global variable initializer in another module, and likewise
+//for global variables. Thus the partitioning algorithm must take this into
+//account. We also would like a relatively even split of the burden of
+//optimizing between modules, so we use basic block count as a heuristic.
+static SmallVector<Partition, 16> partitionModule(Module &M, unsigned ways) {
+    //Start by stripping fvars and gvars, which helpfully removes their uses as well
+    DenseMap<GlobalValue *, uint32_t> fvars;
+    DenseMap<GlobalValue *, uint32_t> gvars;
+    {
+        auto fvars_gv = M.getGlobalVariable("jl_sysimg_fvars");
+        auto gvars_gv = M.getGlobalVariable("jl_sysimg_gvars");
+        assert(fvars_gv);
+        assert(gvars_gv);
+        auto fvars_init = cast<ConstantArray>(fvars_gv->getInitializer());
+        auto gvars_init = cast<ConstantArray>(gvars_gv->getInitializer());
+        std::string suffix;
+        if (auto md = M.getModuleFlag("julia.mv.suffix")) {
+            suffix = cast<MDString>(md)->getString().str();
+        }
+        auto fvars_idxs = M.getGlobalVariable("jl_sysimg_fvars_idxs");
+        auto gvars_idxs = M.getGlobalVariable("jl_sysimg_gvars_idxs");
+        assert(fvars_idxs);
+        assert(gvars_idxs);
+        auto fvars_idxs_init = cast<ConstantDataArray>(fvars_idxs->getInitializer());
+        auto gvars_idxs_init = cast<ConstantDataArray>(gvars_idxs->getInitializer());
+        for (unsigned i = 0; i < fvars_init->getNumOperands(); ++i) {
+            auto gv = cast<GlobalValue>(fvars_init->getOperand(i)->stripPointerCasts());
+            auto idx = fvars_idxs_init->getElementAsInteger(i);
+            fvars[gv] = idx;
+        }
+        for (unsigned i = 0; i < gvars_init->getNumOperands(); ++i) {
+            auto gv = cast<GlobalValue>(gvars_init->getOperand(i)->stripPointerCasts());
+            auto idx = gvars_idxs_init->getElementAsInteger(i);
+            gvars[gv] = idx;
+        }
+        fvars_gv->eraseFromParent();
+        gvars_gv->eraseFromParent();
+        fvars_idxs->eraseFromParent();
+        gvars_idxs->eraseFromParent();
+    }
+    DisjointSetPartitioner partitioner;
+    int inc = 0;
+    // everything is partionable
+    for (auto &GV : M.global_values()) {
+        if (GV.isDeclaration())
+            continue;
+        if (!GV.hasName()) {
+            GV.setName("jl_ext_" + std::to_string(inc++));
+        }
+        partitioner.add(&GV);
+    }
+    // these uses must go together
+    for (auto node : partitioner.nodes) {
+        for (auto uses = ConstantUses<GlobalValue>(node.GV, M); !uses.done(); uses.next()) {
+            auto info = uses.get_info();
+            assert(isa<GlobalVariable>(info.val) || isa<GlobalAlias>(info.val));
+            partitioner.merge(node.parent, partitioner.nodeMap[info.val]);
+        }
+    }
+    SmallVector<Partition, 16> partitions(ways);
+    typedef std::pair<size_t, Partition*> Processor;
+    std::priority_queue<Processor, std::vector<Processor>, std::greater<Processor>> pq;
+    auto push_partition([&](Partition &p, DisjointSetPartitioner::Node &node) {
+        p.GVNames.insert(node.GV->getName());
+        if (fvars.count(node.GV))
+            p.fvars[node.GV->getName()] = fvars[node.GV];
+        if (gvars.count(node.GV))
+            p.gvars[node.GV->getName()] = gvars[node.GV];
+        node.weight = &p - partitions.data();
+        node.GV = nullptr;
+    });
+    unsigned way = 0;
+    //Can't make the 1 fvar + 1 gvar assumption anymore
+    // but try to split initial load evenly
+    // // Require >= 1 fvar per partition
+    for (auto &fvar : fvars) {
+        auto i = partitioner.nodeMap[fvar.first];
+        auto &node = partitioner.nodes[i];
+        if (!node.GV)
+            continue;
+        if (node.parent != i) {
+            continue;
+        }
+        auto &p = partitions[way];
+        auto weight = node.weight;
+        push_partition(p, node);
+        pq.push(Processor(weight, &p));
+        if (++way == ways) {
+            break;
+        }
+    }
+    // assert(way == ways);
+    way = 0;
+    // //Require >= 1 gvar per partition
+    for (auto &gvar : gvars) {
+        auto i = partitioner.nodeMap[gvar.first];
+        auto &node = partitioner.nodes[i];
+        if (node.parent != i) {
+            continue;
+        }
+        auto &p = partitions[way];
+        auto weight = node.weight;
+        push_partition(p, node);
+        pq.push(Processor(weight, &p));
+        if (++way == ways) {
+            break;
+        }
+    }
+    // assert(way == ways);
+    typedef std::pair<size_t, unsigned> WorkUnit;
+    std::vector<WorkUnit> roots;
+    roots.reserve(partitioner.roots);
+    // Assign root workloads in reverse sorted order
+    // (reduces chance of unlucky partitioning)
+    for (unsigned i = 0; i < partitioner.nodes.size(); i++) {
+        auto &node = partitioner.nodes[i];
+        if (node.parent != i)
+            continue;
+        roots.push_back(WorkUnit(node.weight, i));
+    }
+    std::sort(roots.begin(), roots.end(), std::greater<WorkUnit>());
+    for (auto &root : roots) {
+        auto &node = partitioner.nodes[root.second];
+        if (!node.GV)
+            continue;
+        auto q = pq.top();
+        pq.pop();
+        q.first += node.weight;
+        push_partition(*q.second, node);
+        pq.push(q);
+    }
+    // Assign non-root nodes to their root's partition
+    for (unsigned i = 0; i < partitioner.nodes.size(); i++) {
+        auto &node = partitioner.nodes[i];
+        if (!node.GV)
+            continue;
+        if (node.parent != i) {
+            auto &root = partitioner.nodes[partitioner.root(node.parent)];
+            assert(!root.GV);
+            push_partition(partitions[root.weight], node);
+        } else {
+            assert(!node.GV);
+        }
+    }
+    assert(verify_partitioning(partitions, M));
+    return partitions;
+}
+
+static auto deserializeModule(const SmallVector<char, 0> &Bitcode, LLVMContext &Ctx) {
+    auto M = cantFail(getLazyBitcodeModule(MemoryBufferRef(StringRef(Bitcode.data(), Bitcode.size()), "Optimized"), Ctx), "Error loading module");
+    // assert(!verifyModule(*M, &errs()) && "Module verification failed");
+    return M;
+}
+
+static auto serializeModule(const Module &M) {
+    SmallVector<char, 0> ClonedModuleBuffer;
+    BitcodeWriter BCWriter(ClonedModuleBuffer);
+    BCWriter.writeModule(M);
+    BCWriter.writeSymtab();
+    BCWriter.writeStrtab();
+    return ClonedModuleBuffer;
+}
+
+void add_output(TargetMachine &DumpTM, Module &M,
+                std::vector<std::string> &outputs,
+                DumpOutput unopt, DumpOutput opt, DumpOutput obj, DumpOutput assm, bool inject_crt, unsigned threads) {
+    assert(threads > 0);
+    if (threads == 1) {
+        outputs.resize(outputs.size() + (!unopt.Name.empty() + !opt.Name.empty() + !obj.Name.empty() + !assm.Name.empty()));
+        unopt.Archive.resize(unopt.Archive.size() + !unopt.Name.empty());
+        opt.Archive.resize(opt.Archive.size() + !opt.Name.empty());
+        obj.Archive.resize(obj.Archive.size() + !obj.Name.empty());
+        assm.Archive.resize(assm.Archive.size() + !assm.Name.empty());
+        add_output_impl(DumpTM, M, outputs, unopt, opt, obj, assm, inject_crt,
+            outputs.size() - 1, unopt.Archive.size() - 1, opt.Archive.size() - 1, obj.Archive.size() - 1, assm.Archive.size() - 1);
+        return;
+    }
+    uint64_t start = 0;
+    uint64_t end = 0;
+    start = jl_hrtime();
+    auto partitions = partitionModule(M, threads);
+    end = jl_hrtime();
+    dbgs() << "Partitioning time: " << (end - start) / 1e9 << "s\n";
+    start = jl_hrtime();
+    auto serialized = serializeModule(M);
+    end = jl_hrtime();
+    dbgs() << "Serialization time: " << (end - start) / 1e9 << "s\n";
+    std::vector<std::thread> workers(threads);
+    unsigned output_offset = outputs.size();
+    unsigned output_inc = !unopt.Name.empty() + !opt.Name.empty() + !obj.Name.empty() + !assm.Name.empty();
+    outputs.resize(output_offset + output_inc * threads);
+    unsigned unopt_offset = unopt.Archive.size();
+    unopt.Archive.resize(unopt_offset + !unopt.Name.empty() * threads);
+    unsigned opt_offset = opt.Archive.size();
+    opt.Archive.resize(opt_offset + !opt.Name.empty() * threads);
+    unsigned obj_offset = obj.Archive.size();
+    obj.Archive.resize(obj_offset + !obj.Name.empty() * threads);
+    unsigned assm_offset = assm.Archive.size();
+    assm.Archive.resize(assm_offset + !assm.Name.empty() * threads);
+    start = jl_hrtime();
+    for (unsigned i = 0; i < threads; ++i) {
+        workers[i] = std::thread([&, i]() {
+            LLVMContext ctx;
+            uint64_t start = 0;
+            uint64_t end = 0;
+            start = jl_hrtime();
+            auto M = deserializeModule(serialized, ctx);
+            end = jl_hrtime();
+            dbgs() << "Deserialization time: " << (end - start) / 1e9 << "s\n";
+            dbgs() << "Starting shard " << i << "\n";
+            DenseSet<GlobalValue *> Preserve;
+            for (auto &GV : M->global_values()) {
+                if (!GV.isDeclaration()) {
+                    if (partitions[i].GVNames.count(GV.getName())) {
+                        Preserve.insert(&GV);
+                    }
+                }
+            }
+            start = jl_hrtime();
+            for (auto &F : M->functions()) {
+                if (!F.isDeclaration()) {
+                    if (!Preserve.contains(&F)) {
+                        F.deleteBody();
+                        F.setLinkage(GlobalValue::ExternalLinkage);
+                    }
+                }
+            }
+            for (auto &GV : M->globals()) {
+                if (!GV.isDeclaration()) {
+                    if (!Preserve.contains(&GV)) {
+                        GV.setInitializer(nullptr);
+                        GV.setLinkage(GlobalValue::ExternalLinkage);
+                    }
+                }
+            }
+            SmallVector<std::pair<GlobalAlias *, GlobalValue *>> DeletedAliases;
+            for (auto &GA : M->aliases()) {
+                if (!GA.isDeclaration()) {
+                    if (!Preserve.contains(&GA)) {
+                        if (GA.getValueType()->isFunctionTy()) {
+                            DeletedAliases.push_back({ &GA, Function::Create(cast<FunctionType>(GA.getValueType()), GlobalValue::ExternalLinkage, "", M.get()) });
+                        } else {
+                            DeletedAliases.push_back({ &GA, new GlobalVariable(*M, GA.getValueType(), false, GlobalValue::ExternalLinkage, nullptr) });
+                        }
+                    }
+                }
+            }
+            cantFail(M->materializeAll());
+            for (auto &Deleted : DeletedAliases) {
+                Deleted.second->takeName(Deleted.first);
+                Deleted.first->replaceAllUsesWith(Deleted.second);
+                Deleted.first->eraseFromParent();
+            }
+            end = jl_hrtime();
+            dbgs() << "Clone time: " << (end - start) / 1e9 << "s\n";
+            //Restore fvars, fvars_idxs, gvars, gvars_idxs
+            std::vector<std::pair<uint32_t, GlobalValue *>> fvar_pairs;
+            fvar_pairs.reserve(partitions[i].fvars.size());
+            for (auto &fvar : partitions[i].fvars) {
+                auto F = M->getFunction(fvar.first());
+                assert(F);
+                assert(!F->isDeclaration());
+                fvar_pairs.push_back({ fvar.second, F });
+            }
+            std::vector<GlobalValue *> fvars;
+            std::vector<uint32_t> fvar_idxs;
+            fvars.reserve(fvar_pairs.size());
+            fvar_idxs.reserve(fvar_pairs.size());
+            std::sort(fvar_pairs.begin(), fvar_pairs.end());
+            for (auto &fvar : fvar_pairs) {
+                fvars.push_back(fvar.second);
+                fvar_idxs.push_back(fvar.first);
+            }
+            std::vector<std::pair<uint32_t, GlobalValue *>> gvar_pairs;
+            gvar_pairs.reserve(partitions[i].gvars.size());
+            for (auto &gvar : partitions[i].gvars) {
+                auto GV = M->getGlobalVariable(gvar.first());
+                assert(GV);
+                assert(!GV->isDeclaration());
+                gvar_pairs.push_back({ gvar.second, GV });
+            }
+            std::vector<GlobalValue *> gvars;
+            std::vector<uint32_t> gvar_idxs;
+            gvars.reserve(gvar_pairs.size());
+            gvar_idxs.reserve(gvar_pairs.size());
+            std::sort(gvar_pairs.begin(), gvar_pairs.end());
+            for (auto &gvar : gvar_pairs) {
+                gvars.push_back(gvar.second);
+                gvar_idxs.push_back(gvar.first);
+            }
+            auto T_psize = M->getDataLayout().getIntPtrType(M->getContext())->getPointerTo();
+            emit_offset_table(*M, fvars, "jl_sysimg_fvars", T_psize);
+            emit_offset_table(*M, gvars, "jl_sysimg_gvars", T_psize);
+            emit_index_table(*M, fvar_idxs, "jl_sysimg_fvars_idxs");
+            emit_index_table(*M, gvar_idxs, "jl_sysimg_gvars_idxs");
+            M->setModuleFlag(Module::Error, "julia.mv.suffix", MDString::get(M->getContext(), "_" + std::to_string(i+1)));
+            //Drop all of the unused declarations; multiversioning won't need them
+            SmallVector<GlobalValue *> unused;
+            for (auto &G : M->global_values()) {
+                if (G.isDeclaration()) {
+                    if (G.use_empty()) {
+                        unused.push_back(&G);
+                    } else {
+                        G.setDSOLocal(false); // These are never going to be seen in the same module again
+                        G.setVisibility(GlobalValue::DefaultVisibility);
+                    }
+                }
+            }
+            for (auto &G : unused)
+                G->eraseFromParent();
+            add_output_impl(DumpTM, *M, outputs, unopt, opt, obj, assm, inject_crt,
+                            output_inc * i + output_offset, unopt_offset + i, opt_offset + i, obj_offset + i, assm_offset + i);
+        });
+    }
+    end = jl_hrtime();
+    dbgs() << "Shard setup time: " << (end - start) / 1e9 << "s\n";
+    start = jl_hrtime();
+    for (auto &w : workers)
+        w.join();
+    end = jl_hrtime();
+    dbgs() << "Shard waiting time: " << (end - start) / 1e9 << "s\n";
 }

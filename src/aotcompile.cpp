@@ -387,15 +387,6 @@ void *jl_create_native_impl(jl_array_t *methods, LLVMOrcThreadSafeModuleRef llvm
     return (void*)data;
 }
 
-
-static void emit_result(std::vector<NewArchiveMember> &Archive, SmallVectorImpl<char> &OS,
-        StringRef Name, std::vector<std::string> &outputs)
-{
-    outputs.push_back({ OS.data(), OS.size() });
-    Archive.push_back(NewArchiveMember(MemoryBufferRef(outputs.back(), Name)));
-    OS.clear();
-}
-
 static object::Archive::Kind getDefaultForHost(Triple &triple)
 {
       if (triple.isOSDarwin())
@@ -409,24 +400,6 @@ static void reportWriterError(const ErrorInfoBase &E)
     std::string err = E.message();
     jl_safe_printf("ERROR: failed to emit output file %s\n", err.c_str());
 }
-
-static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionType *FT)
-{
-    Function *target = M.getFunction(alias);
-    if (!target) {
-        target = Function::Create(FT, Function::ExternalLinkage, alias, M);
-    }
-    Function *interposer = Function::Create(FT, Function::WeakAnyLinkage, name, M);
-    appendToCompilerUsed(M, {interposer});
-
-    llvm::IRBuilder<> builder(BasicBlock::Create(M.getContext(), "top", interposer));
-    SmallVector<Value *, 4> CallArgs;
-    for (auto &arg : interposer->args())
-        CallArgs.push_back(&arg);
-    auto val = builder.CreateCall(target, CallArgs);
-    builder.CreateRet(val);
-}
-
 
 // takes the running content that has collected in the shadow module and dump it to disk
 // this builds the object file portion of the sysimage files for fast startup
@@ -538,44 +511,12 @@ void jl_dump_native_impl(void *native_code,
         }
     }
 
-    // do the actual work
-    auto add_output = [&] (Module &M, StringRef unopt_bc_Name, StringRef bc_Name, StringRef obj_Name, StringRef asm_Name) {
-        preopt.run(M, empty.MAM);
-        if (bc_fname || obj_fname || asm_fname) {
-            assert(!verifyModule(M, &errs()));
-            optimizer.run(M);
-            assert(!verifyModule(M, &errs()));
-        }
-
-        // We would like to emit an alias or an weakref alias to redirect these symbols
-        // but LLVM doesn't let us emit a GlobalAlias to a declaration...
-        // So for now we inject a definition of these functions that calls our runtime
-        // functions. We do so after optimization to avoid cloning these functions.
-        injectCRTAlias(M, "__gnu_h2f_ieee", "julia__gnu_h2f_ieee",
-                FunctionType::get(Type::getFloatTy(Context), { Type::getHalfTy(Context) }, false));
-        injectCRTAlias(M, "__extendhfsf2", "julia__gnu_h2f_ieee",
-                FunctionType::get(Type::getFloatTy(Context), { Type::getHalfTy(Context) }, false));
-        injectCRTAlias(M, "__gnu_f2h_ieee", "julia__gnu_f2h_ieee",
-                FunctionType::get(Type::getHalfTy(Context), { Type::getFloatTy(Context) }, false));
-        injectCRTAlias(M, "__truncsfhf2", "julia__gnu_f2h_ieee",
-                FunctionType::get(Type::getHalfTy(Context), { Type::getFloatTy(Context) }, false));
-        injectCRTAlias(M, "__truncdfhf2", "julia__truncdfhf2",
-                FunctionType::get(Type::getHalfTy(Context), { Type::getDoubleTy(Context) }, false));
-
-        postopt.run(M, empty.MAM);
-        emitter.run(M);
-
-        if (unopt_bc_fname)
-            emit_result(unopt_bc_Archive, unopt_bc_Buffer, unopt_bc_Name, outputs);
-        if (bc_fname)
-            emit_result(bc_Archive, bc_Buffer, bc_Name, outputs);
-        if (obj_fname)
-            emit_result(obj_Archive, obj_Buffer, obj_Name, outputs);
-        if (asm_fname)
-            emit_result(asm_Archive, asm_Buffer, asm_Name, outputs);
-    };
-
-    add_output(*dataM, "unopt.bc", "text.bc", "text.o", "text.s");
+    add_output(*TM, *dataM, outputs,
+                DumpOutput{unopt_bc_Archive, unopt_bc_fname ? "unopt.bc" : ""},
+                DumpOutput{bc_Archive, bc_fname ? "text.bc" : ""},
+                DumpOutput{obj_Archive, obj_fname ? "text.o" : ""},
+                DumpOutput{asm_Archive, asm_fname ? "text.s" : ""},
+                true, threads);
 
     orc::ThreadSafeModule sysimage(std::make_unique<Module>("sysimage", Context), TSCtx);
     auto sysimageM = sysimage.getModuleUnlocked();
@@ -608,7 +549,12 @@ void jl_dump_native_impl(void *native_code,
                                      GlobalVariable::ExternalLinkage,
                                      len, "jl_system_image_size"));
     }
-    add_output(*sysimageM, "data.bc", "data.bc", "data.o", "data.s");
+    add_output(*TM, *sysimageM, outputs,
+                DumpOutput{unopt_bc_Archive, unopt_bc_fname ? "data.bc" : ""},
+                DumpOutput{bc_Archive, bc_fname ? "data.bc" : ""},
+                DumpOutput{obj_Archive, obj_fname ? "data.o" : ""},
+                DumpOutput{asm_Archive, asm_fname ? "data.s" : ""},
+                false, 1);
 
     object::Archive::Kind Kind = getDefaultForHost(TheTriple);
     if (unopt_bc_fname)

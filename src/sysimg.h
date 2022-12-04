@@ -1,3 +1,5 @@
+#include <llvm/Object/ArchiveWriter.h>
+
 #include "jitlayers.h"
 
 #include <map>
@@ -169,3 +171,13 @@ void add_sysimage_globals(llvm::Module &M, jl_native_code_desc_t *data);
 void add_sysimage_targets(llvm::Module &M, bool has_veccall, uint32_t nshards, uint32_t nfvars, uint32_t ngvars);
 
 void addComdat(llvm::GlobalValue *G);
+
+struct DumpOutput {
+    std::vector<llvm::NewArchiveMember> &Archive;
+    StringRef Name;
+};
+
+void add_output(llvm::TargetMachine &DumpTM, llvm::Module &M,
+                std::vector<std::string> &outputs,
+                DumpOutput unopt, DumpOutput opt, DumpOutput obj, DumpOutput assm,
+                bool inject_crt, unsigned threads);

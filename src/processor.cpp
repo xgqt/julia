@@ -677,7 +677,7 @@ static inline jl_image_t parse_sysimg(void *hdl, F &&callback)
         const int32_t *foffsets = offsets + 1;
 
         const int32_t *reloc_slots = shards[i].relocs;
-        const uint32_t nreloc = reloc_slots[i];
+        const uint32_t nreloc = reloc_slots[0];
         reloc_slots += 1;
         const uint32_t *clone_idxs = shards[i].cidxs;
         const int32_t *clone_offsets = shards[i].coffsets;

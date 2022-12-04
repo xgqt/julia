@@ -683,7 +683,19 @@ extern "C" JL_DLLEXPORT
 void jl_register_fptrs_impl(uint64_t sysimage_base, const jl_sysimg_fptrs_t *fptrs,
     jl_method_instance_t **linfos, size_t n)
 {
-    getJITDebugRegistry().set_sysimg_info({(uintptr_t) sysimage_base, *fptrs, linfos, n});
+    // The linearized array in fptrs is going to be freed soon, take a copy
+    JITDebugInfoRegistry::linearized_fptrs_t linearized;
+    linearized.base = fptrs->base;
+    linearized.offsets.resize(fptrs->noffsets);
+    //move the offsets into the copy
+    memcpy(linearized.offsets.data(), fptrs->offsets, fptrs->noffsets * sizeof(int32_t));
+    if (fptrs->nclones) {
+        linearized.clones.resize(fptrs->nclones);
+        for (size_t i = 0; i < fptrs->nclones; i++) {
+            linearized.clones[i] = {fptrs->clone_offsets[i], fptrs->clone_idxs[i]};
+        }
+    }
+    getJITDebugRegistry().set_sysimg_info({(uintptr_t) sysimage_base, std::move(linearized), linfos, n});
 }
 
 template<typename T>
@@ -1155,9 +1167,9 @@ static int jl_getDylibFunctionInfo(jl_frame_t **frames, size_t pointer, int skip
         auto sysimg_locked = getJITDebugRegistry().get_sysimg_info();
         if (isSysImg && sysimg_locked->sysimg_fptrs.base && saddr) {
             intptr_t diff = (uintptr_t)saddr - (uintptr_t)sysimg_locked->sysimg_fptrs.base;
-            for (size_t i = 0; i < sysimg_locked->sysimg_fptrs.nclones; i++) {
-                if (diff == sysimg_locked->sysimg_fptrs.clone_offsets[i]) {
-                    uint32_t idx = sysimg_locked->sysimg_fptrs.clone_idxs[i] & jl_sysimg_val_mask;
+            for (size_t i = 0; i < sysimg_locked->sysimg_fptrs.clones.size(); i++) {
+                if (diff == sysimg_locked->sysimg_fptrs.clones[i].first) {
+                    uint32_t idx = sysimg_locked->sysimg_fptrs.clones[i].second & jl_sysimg_val_mask;
                     if (idx < sysimg_locked->sysimg_fvars_n) // items after this were cloned but not referenced directly by a method (such as our ccall PLT thunks)
                         frame0->linfo = sysimg_locked->sysimg_fvars_linfo[idx];
                     break;

@@ -81,9 +81,16 @@ public:
         ~Locked() JL_NOTSAFEPOINT = default;
     };
 
+    struct linearized_fptrs_t {
+        const char *base;
+        std::vector<int32_t> offsets;
+        //offset,idx
+        std::vector<std::pair<int32_t, uint32_t>> clones;
+    };
+
     struct sysimg_info_t {
         uint64_t jl_sysimage_base;
-        jl_sysimg_fptrs_t sysimg_fptrs;
+        linearized_fptrs_t sysimg_fptrs;
         jl_method_instance_t **sysimg_fvars_linfo;
         size_t sysimg_fvars_n;
     };

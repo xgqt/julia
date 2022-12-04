@@ -155,6 +155,40 @@ typedef struct _jl_sysimg_fptrs_t {
     const uint32_t *clone_idxs;
 } jl_sysimg_fptrs_t;
 
+typedef struct _jl_sysimg_metadata_t {
+    uint32_t nshards;
+    uint32_t nfvars;
+    uint32_t ngvars;
+} jl_sysimg_metadata_t;
+
+typedef struct _jl_sysimg_shard_t {
+    // base function pointer
+    const uintptr_t *fbase;
+    // length + offsets of every function from fbase
+    const int32_t *foffsets;
+    // index of each function in the overall sysimg
+    const uint32_t *fidxs;
+    // base global variable pointer
+    uintptr_t *gbase;
+    // length + offsets of every global variable from gbase
+    const int32_t *goffsets;
+    // index of each global variable in the overall sysimg
+    const uint32_t *gidxs;
+    // offsets of target-specific clone functions from fbase
+    const int32_t *coffsets;
+    // shard-local indexes of clone offsets
+    const uint32_t *cidxs;
+    // shard-local function index+global variable offset from gbase
+    const int32_t *relocs;
+} jl_sysimg_shard_t;
+
+typedef struct {
+    uint64_t base;
+    uintptr_t *gvars_base;
+    const int32_t *gvars_offsets;
+    jl_sysimg_fptrs_t fptrs;
+} jl_image_t;
+
 /**
  * Initialize the processor dispatch system with sysimg `hdl` (also initialize the sysimg itself).
  * The dispatch system will find the best implementation to be used in this session.
@@ -165,8 +199,8 @@ typedef struct _jl_sysimg_fptrs_t {
  *
  * Return the data about the function pointers selected.
  */
-jl_sysimg_fptrs_t jl_init_processor_sysimg(void *hdl);
-jl_sysimg_fptrs_t jl_init_processor_pkgimg(void *hdl);
+jl_image_t jl_init_processor_sysimg(void *hdl);
+jl_image_t jl_init_processor_pkgimg(void *hdl);
 
 // Return the name of the host CPU as a julia string.
 JL_DLLEXPORT jl_value_t *jl_get_cpu_name(void);

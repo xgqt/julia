@@ -17,6 +17,10 @@
 
 #include "julia_assert.h"
 
+#ifndef _OS_WINDOWS_
+#include <dlfcn.h>
+#endif
+
 // CPU target string is a list of strings separated by `;` each string starts with a CPU
 // or architecture name and followed by an optional list of features separated by `,`.
 // A "generic" or empty CPU name means the basic required feature set of the target ISA
@@ -621,44 +625,57 @@ static inline std::vector<TargetData<n>> &get_cmdline_targets(F &&feature_cb)
 // Load sysimg, use the `callback` for dispatch and perform all relocations
 // for the selected target.
 template<typename F>
-static inline jl_sysimg_fptrs_t parse_sysimg(void *hdl, F &&callback)
+static inline jl_image_t parse_sysimg(void *hdl, F &&callback)
 {
-    jl_sysimg_fptrs_t res = {nullptr, 0, nullptr, 0, nullptr, nullptr};
+    //zeroinit
+    jl_image_t image{};
 
-    // .data base
-    char *data_base;
-    if (!jl_dlsym(hdl, "jl_sysimg_gvars_base", (void**)&data_base, 0)) {
-        data_base = NULL;
-    }
-    // .text base
-    char *text_base;
-    if (!jl_dlsym(hdl, "jl_sysimg_fvars_base", (void**)&text_base, 0)) {
-        text_base = NULL;
-    }
-    res.base = text_base;
+#ifdef _OS_WINDOWS_
+        image.base = (intptr_t)hdl;
+#else
+        Dl_info dlinfo;
+        if (dladdr((void*)image.gvars_base, &dlinfo) != 0) {
+            image.base = (intptr_t)dlinfo.dli_fbase;
+        }
+        else {
+            image.base = 0;
+        }
+#endif
 
-    int32_t *offsets;
-    jl_dlsym(hdl, "jl_sysimg_fvars_offsets", (void**)&offsets, 1);
-    uint32_t nfunc = offsets[0];
-    res.offsets = offsets + 1;
+    const jl_sysimg_metadata_t *metadata;
+    jl_dlsym(hdl, "jl_sysimg_metadata", (void **) &metadata, 1);
 
-    void *ids;
-    jl_dlsym(hdl, "jl_dispatch_target_ids", &ids, 1);
+    // bump the metadata pointer (target data is stored after the metadata)
+    void *ids = (void *) (metadata + 1);
     uint32_t target_idx = callback(ids);
 
-    int32_t *reloc_slots;
-    jl_dlsym(hdl, "jl_dispatch_reloc_slots", (void **)&reloc_slots, 1);
+    jl_sysimg_shard_t *shards;
+    jl_dlsym(hdl, "jl_sysimg_shards", (void **) &shards, 1);
+
+    // .data base
+    char *data_base = (char *)shards[0].gbase;
+    image.gvars_base = (uintptr_t *)data_base;
+    image.gvars_offsets = shards[0].goffsets + 1;
+
+    // .text base
+    char *text_base = (char *)shards[0].fbase;
+    image.fptrs.base = text_base;
+
+    const int32_t *offsets = shards[0].foffsets;
+    uint32_t nfunc = offsets[0];
+    image.fptrs.noffsets = nfunc;
+    image.fptrs.offsets = offsets + 1;
+
+    const int32_t *reloc_slots = shards[0].relocs;
     const uint32_t nreloc = reloc_slots[0];
     reloc_slots += 1;
-    uint32_t *clone_idxs;
-    int32_t *clone_offsets;
-    jl_dlsym(hdl, "jl_dispatch_fvars_idxs", (void**)&clone_idxs, 1);
-    jl_dlsym(hdl, "jl_dispatch_fvars_offsets", (void**)&clone_offsets, 1);
+    const uint32_t *clone_idxs = shards[0].cidxs;
+    const int32_t *clone_offsets = shards[0].coffsets;
     uint32_t tag_len = clone_idxs[0];
     clone_idxs += 1;
 
     assert(tag_len & jl_sysimg_tag_mask);
-    std::vector<const int32_t*> base_offsets = {res.offsets};
+    std::vector<const int32_t*> base_offsets = {image.fptrs.offsets};
     // Find target
     for (uint32_t i = 0;i < target_idx;i++) {
         uint32_t len = jl_sysimg_val_mask & tag_len;
@@ -680,20 +697,20 @@ static inline jl_sysimg_fptrs_t parse_sysimg(void *hdl, F &&callback)
     if (clone_all) {
         // clone_all
         if (target_idx != 0) {
-            res.offsets = clone_offsets;
+            image.fptrs.offsets = clone_offsets;
         }
     }
     else {
         uint32_t base_idx = clone_idxs[0];
         assert(base_idx < target_idx);
         if (target_idx != 0) {
-            res.offsets = base_offsets[base_idx];
-            assert(res.offsets);
+            image.fptrs.offsets = base_offsets[base_idx];
+            assert(image.fptrs.offsets);
         }
         clone_idxs++;
-        res.nclones = tag_len;
-        res.clone_offsets = clone_offsets;
-        res.clone_idxs = clone_idxs;
+        image.fptrs.nclones = tag_len;
+        image.fptrs.clone_offsets = clone_offsets;
+        image.fptrs.clone_idxs = clone_idxs;
     }
     // Do relocation
     uint32_t reloc_i = 0;
@@ -702,7 +719,7 @@ static inline jl_sysimg_fptrs_t parse_sysimg(void *hdl, F &&callback)
         uint32_t idx = clone_idxs[i];
         int32_t offset;
         if (clone_all) {
-            offset = res.offsets[idx];
+            offset = image.fptrs.offsets[idx];
         }
         else if (idx & jl_sysimg_tag_mask) {
             idx = idx & jl_sysimg_val_mask;
@@ -718,7 +735,7 @@ static inline jl_sysimg_fptrs_t parse_sysimg(void *hdl, F &&callback)
                 found = true;
                 auto slot = (const void**)(data_base + reloc_slots[reloc_i * 2 + 1]);
                 assert(slot);
-                *slot = offset + res.base;
+                *slot = offset + image.fptrs.base;
             }
             else if (reloc_idx > idx) {
                 break;
@@ -728,7 +745,7 @@ static inline jl_sysimg_fptrs_t parse_sysimg(void *hdl, F &&callback)
         (void)found;
     }
 
-    return res;
+    return image;
 }
 
 template<typename T>

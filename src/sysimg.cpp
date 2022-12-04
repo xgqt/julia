@@ -307,6 +307,8 @@ static void annotate_clones(Module &M) {
 }
 
 void add_sysimage_targets(Module &M, bool has_veccall, uint32_t nshards, uint32_t nfvars, uint32_t ngvars) {
+    //We don't do parallelism yet, lie to the interface
+    nshards = 1;
     // Generate `jl_dispatch_target_ids`
     auto specs = jl_get_llvm_clone_targets();
     const uint32_t base_flags = has_veccall ? JL_TARGET_VEC_CALL : 0;
@@ -316,13 +318,10 @@ void add_sysimage_targets(Module &M, bool has_veccall, uint32_t nshards, uint32_
         memcpy(buff, &v, 4);
         data.insert(data.end(), buff, buff + 4);
     };
-    //TODO soon to come...
-    // push_i32(nshards);
-    // push_i32(nfvars);
-    // push_i32(ngvars);
-    (void)nshards;
-    (void)nfvars;
-    (void)ngvars;
+    static_assert(sizeof(jl_sysimg_metadata_t) == 3 * sizeof(uint32_t), "jl_sysimg_metadata_t size mismatch");
+    push_i32(nshards);
+    push_i32(nfvars);
+    push_i32(ngvars);
     push_i32(specs.size());
     for (uint32_t i = 0; i < specs.size(); i++) {
         push_i32(base_flags | (specs[i].flags & JL_TARGET_UNKNOWN_NAME));
@@ -332,12 +331,63 @@ void add_sysimage_targets(Module &M, bool has_veccall, uint32_t nshards, uint32_
     auto value = ConstantDataArray::get(M.getContext(), data);
     auto targets_gv = new GlobalVariable(M, value->getType(), true,
                                     GlobalVariable::ExternalLinkage,
-                                    value, "jl_dispatch_target_ids");
+                                    value, "jl_sysimg_metadata");
     targets_gv->setAlignment(Align(M.getDataLayout().getPrefTypeAlign(Type::getInt32Ty(M.getContext()))));
     addComdat(targets_gv);
+
+    {
+        auto T_psize = M.getDataLayout().getIntPtrType(Type::getInt8PtrTy(M.getContext()))->getPointerTo();
+        auto T_int32 = Type::getInt32PtrTy(M.getContext());
+        // Generate shard table
+        std::vector<Constant*> shard_metadatas(nshards * sizeof(jl_sysimg_shard_t) / sizeof(int32_t*));
+        for (uint32_t i = 0; i < nshards; i++) {
+            //Manually constructed dual of jl_sysimg_shard_metadata_t
+            auto fvars_base = new GlobalVariable(M, T_psize, true, GlobalValue::ExternalLinkage,
+                                                nullptr, "jl_sysimg_fvars_base_" + std::to_string(i+1));
+            auto gvars_base = new GlobalVariable(M, T_psize, true, GlobalValue::ExternalLinkage,
+                                                nullptr, "jl_sysimg_gvars_base_" + std::to_string(i+1));
+            // We label the following as T_int32, but they're actually arrays of int32s
+            // Since the module is not actually linked by LLVM with the data module,
+            // we don't need to worry about the type mismatch
+            auto fvars_offsets = new GlobalVariable(M, T_int32, true, GlobalValue::ExternalLinkage,
+                                                nullptr, "jl_sysimg_fvars_offsets_" + std::to_string(i+1));
+            auto fvars_idxs = new GlobalVariable(M, T_int32, true, GlobalValue::ExternalLinkage,
+                                                nullptr, "jl_sysimg_fvars_idxs_" + std::to_string(i+1));
+            auto gvars_offsets = new GlobalVariable(M, T_int32, true, GlobalValue::ExternalLinkage,
+                                                nullptr, "jl_sysimg_gvars_offsets_" + std::to_string(i+1));
+            auto gvars_idxs = new GlobalVariable(M, T_int32, true, GlobalValue::ExternalLinkage,
+                                                nullptr, "jl_sysimg_gvars_idxs_" + std::to_string(i+1));
+            auto dispatch_offsets = new GlobalVariable(M, T_int32, true, GlobalValue::ExternalLinkage,
+                                                nullptr, "jl_dispatch_fvars_offsets_" + std::to_string(i+1));
+            auto dispatch_idxs = new GlobalVariable(M, T_int32, true, GlobalValue::ExternalLinkage,
+                                                nullptr, "jl_dispatch_fvars_idxs_" + std::to_string(i+1));
+            auto dispatch_relocs = new GlobalVariable(M, T_int32, true, GlobalValue::ExternalLinkage,
+                                                nullptr, "jl_dispatch_reloc_slots_" + std::to_string(i+1));
+            //Add them all to shard_metadatas
+            // Note that this must match jl_sysimg_shard_t ordering exactly
+            auto offset = i * sizeof(jl_sysimg_shard_t) / sizeof(int32_t*);
+            shard_metadatas[offsetof(jl_sysimg_shard_t, fbase) / sizeof(int32_t*) + offset] = ConstantExpr::getBitCast(fvars_base, T_psize);
+            shard_metadatas[offsetof(jl_sysimg_shard_t, gbase) / sizeof(int32_t*) + offset] = ConstantExpr::getBitCast(gvars_base, T_psize);
+            shard_metadatas[offsetof(jl_sysimg_shard_t, foffsets) / sizeof(int32_t*) + offset] = ConstantExpr::getBitCast(fvars_offsets, T_psize);
+            shard_metadatas[offsetof(jl_sysimg_shard_t, fidxs) / sizeof(int32_t*) + offset] = ConstantExpr::getBitCast(fvars_idxs, T_psize);
+            shard_metadatas[offsetof(jl_sysimg_shard_t, goffsets) / sizeof(int32_t*) + offset] = ConstantExpr::getBitCast(gvars_offsets, T_psize);
+            shard_metadatas[offsetof(jl_sysimg_shard_t, gidxs) / sizeof(int32_t*) + offset] = ConstantExpr::getBitCast(gvars_idxs, T_psize);
+            shard_metadatas[offsetof(jl_sysimg_shard_t, coffsets) / sizeof(int32_t*) + offset] = ConstantExpr::getBitCast(dispatch_offsets, T_psize);
+            shard_metadatas[offsetof(jl_sysimg_shard_t, cidxs) / sizeof(int32_t*) + offset] = ConstantExpr::getBitCast(dispatch_idxs, T_psize);
+            shard_metadatas[offsetof(jl_sysimg_shard_t, relocs) / sizeof(int32_t*) + offset] = ConstantExpr::getBitCast(dispatch_relocs, T_psize);
+        }
+
+        static_assert(sizeof(jl_sysimg_shard_t) == 9 * sizeof(void*), "jl_sysimg_shard_metadata_t has changed");
+
+        dbgs() << "shard_metadatas.size() = " << shard_metadatas.size() << "\n";
+
+        addComdat(new GlobalVariable(M, ArrayType::get(T_psize, shard_metadatas.size()), true,
+                           GlobalVariable::ExternalLinkage,
+                           ConstantArray::get(ArrayType::get(T_psize, shard_metadatas.size()), shard_metadatas),
+                           "jl_sysimg_shards"));
+    }
 }
 
-#ifdef ENABLE_MULTITHREADED_SYSIMG
 static void emit_index_table(Module &mod, std::vector<uint32_t> &idxs, StringRef name)
 {
     auto table = new GlobalVariable(mod, ArrayType::get(Type::getInt32Ty(mod.getContext()), idxs.size()), true,
@@ -346,7 +396,6 @@ static void emit_index_table(Module &mod, std::vector<uint32_t> &idxs, StringRef
                        name);
     table->setVisibility(GlobalValue::HiddenVisibility);
 }
-#endif
 
 static void emit_offset_table(Module &mod, const std::vector<GlobalValue*> &vars, StringRef name, Type *T_psize)
 {
@@ -383,20 +432,19 @@ void add_sysimage_globals(Module &M, jl_native_code_desc_t *data) {
     emit_offset_table(M, data->jl_sysimg_gvars, "jl_sysimg_gvars", T_psize);
     emit_offset_table(M, data->jl_sysimg_fvars, "jl_sysimg_fvars", T_psize);
 
-#ifdef ENABLE_MULTITHREADED_SYSIMG
     std::vector<uint32_t> fvars_idxs(data->jl_sysimg_fvars.size());
     for (size_t i = 0; i < data->jl_sysimg_fvars.size(); i++) {
         fvars_idxs[i] = i;
     }
-    emit_index_table(M, fvars_idxs, "jl_sysimg_fvars_idxs_1");
+    emit_index_table(M, fvars_idxs, "jl_sysimg_fvars_idxs");
     std::vector<uint32_t> gvars_idxs(data->jl_sysimg_gvars.size());
     for (size_t i = 0; i < data->jl_sysimg_gvars.size(); i++) {
         gvars_idxs[i] = i;
     }
-    emit_index_table(M, gvars_idxs, "jl_sysimg_gvars_idxs_1");
+    emit_index_table(M, gvars_idxs, "jl_sysimg_gvars_idxs");
 
+    // Multiversioning will suffix all the gvs with this
     M.addModuleFlag(Module::Error, "julia.mv.suffix", MDString::get(M.getContext(), "_1"));
-#endif
 
     // reflect the address of the jl_RTLD_DEFAULT_handle variable
     // back to the caller, so that we can check for consistency issues

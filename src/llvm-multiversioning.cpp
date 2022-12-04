@@ -162,6 +162,8 @@ static inline std::vector<T*> consume_gv(Module &M, const char *name, bool allow
     return res;
 }
 
+#ifndef NDEBUG
+
 static bool verify_reloc_slots(ConstantDataArray &idxs, ConstantArray &reloc_slots, bool clone_all, uint32_t start, uint32_t end) {
     bool bad = false;
     auto nreloc_val = cast<ConstantInt>(reloc_slots.getOperand(0));
@@ -210,7 +212,7 @@ static bool verify_reloc_slots(ConstantDataArray &idxs, ConstantArray &reloc_slo
 //This mimics the logic during sysimage loading, so we fail earlier
 //if multiversioning doesn't fit what the loader expects
 // currently just checks reloc_slots against dispatch_fvars_idxs
-static bool verify_multiversioning(Module &M) {
+static inline bool verify_multiversioning(Module &M) {
     std::string suffix;
     if (auto suffix_md = M.getModuleFlag("julia.mv.suffix")) {
         suffix = cast<MDString>(suffix_md)->getString().str();
@@ -226,12 +228,12 @@ static bool verify_multiversioning(Module &M) {
         dbgs() << "ERROR: Missing jl_dispatch_fvars_idxs" << suffix << "\n";
         bad = true;
     }
-    auto cidxs = dyn_cast<ConstantDataArray>(clone_idxs->getInitializer());
+    auto cidxs = dyn_cast_or_null<ConstantDataArray>(clone_idxs->getInitializer());
     if (!cidxs) {
         dbgs() << "ERROR: jl_dispatch_fvars_idxs" << suffix << " is not a constant data array\n";
         bad = true;
     }
-    auto rslots = dyn_cast<ConstantArray>(reloc_slots->getInitializer());
+    auto rslots = dyn_cast_or_null<ConstantArray>(reloc_slots->getInitializer());
     if (!rslots) {
         if (!isa<ConstantAggregateZero>(reloc_slots->getInitializer())) {
             dbgs() << "ERROR: jl_dispatch_reloc_slots" << suffix << " is not a constant array\n";
@@ -268,6 +270,8 @@ static bool verify_multiversioning(Module &M) {
     }
     return bad;
 }
+
+#endif
 
 // Collect basic information about targets and functions.
 CloneCtx::CloneCtx(Module &M, bool allow_bad_fvars)
@@ -405,7 +409,7 @@ void CloneCtx::clone_decls()
 {
     std::vector<std::string> suffixes(specs.size());
     for (uint32_t i = 1; i < specs.size(); i++) {
-        suffixes[i] = ".clone_" + i;
+        suffixes[i] = ".clone_" + std::to_string(i);
     }
     for (size_t i = 0; i < orig_funcs.size(); i++) {
         if (!orig_funcs[i]->hasFnAttribute("julia.mv.clones"))
@@ -474,7 +478,9 @@ void CloneCtx::clone_bases()
     }
 }
 
-static bool is_vector(FunctionType *ty)
+#ifndef NDEBUG
+
+static inline bool is_vector(FunctionType *ty)
 {
     if (ty->getReturnType()->isVectorTy())
         return true;
@@ -485,6 +491,8 @@ static bool is_vector(FunctionType *ty)
     }
     return false;
 }
+
+#endif
 
 static void add_features(Function *F, StringRef name, StringRef features, uint32_t flags)
 {
@@ -615,6 +623,7 @@ void CloneCtx::rewrite_alias(GlobalAlias *alias, Function *F)
         assert(grp.relocs.count(id));
         for (auto &tgt: grp.clones) {
             assert(tgt.relocs.count(id));
+            (void) tgt;
         }
     }
     alias_relocs.insert(id);
@@ -988,7 +997,7 @@ static bool runMultiVersioning(Module &M, bool allow_bad_fvars)
     // requires prior knowledge of which function actually
     // need relocation slots and which functions are part
     // of the fvars list, so we cannot add to these on
-    // the fly. 
+    // the fly.
     clone.prepare_relocs();
 
     // Clone function declarations
@@ -998,7 +1007,7 @@ static bool runMultiVersioning(Module &M, bool allow_bad_fvars)
     // In the case of sharded multiversioning, this may
     // clone a declaration that has no body, and this
     // declaration will be ignored during the cloning
-    // of bodies. 
+    // of bodies.
     clone.clone_decls();
 
     // Collect a list of original functions and clone base functions

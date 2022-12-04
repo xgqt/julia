@@ -569,7 +569,7 @@ static void add_output_impl(TargetMachine &DumpTM, Module &M,
         MPM.run(M, AM.MAM);
         bufs[1] = { opt_bc_Buffer.data(), opt_bc_Buffer.size() };
     }
-    
+
     if (!obj.Name.empty()) {
         SmallVector<char, 0> obj_Buffer;
         raw_svector_ostream obj_OS(obj_Buffer);

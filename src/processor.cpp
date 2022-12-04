@@ -630,20 +630,9 @@ static inline jl_image_t parse_sysimg(void *hdl, F &&callback)
     //zeroinit
     jl_image_t image{};
 
-#ifdef _OS_WINDOWS_
-        image.base = (intptr_t)hdl;
-#else
-        Dl_info dlinfo;
-        if (dladdr((void*)image.gvars_base, &dlinfo) != 0) {
-            image.base = (intptr_t)dlinfo.dli_fbase;
-        }
-        else {
-            image.base = 0;
-        }
-#endif
-
     const jl_sysimg_metadata_t *metadata;
     jl_dlsym(hdl, "jl_sysimg_metadata", (void **) &metadata, 1);
+    assert(metadata->nshards > 0);
 
     // bump the metadata pointer (target data is stored after the metadata)
     void *ids = (void *) (metadata + 1);
@@ -652,97 +641,183 @@ static inline jl_image_t parse_sysimg(void *hdl, F &&callback)
     jl_sysimg_shard_t *shards;
     jl_dlsym(hdl, "jl_sysimg_shards", (void **) &shards, 1);
 
-    // .data base
-    char *data_base = (char *)shards[0].gbase;
-    image.gvars_base = (uintptr_t *)data_base;
-    image.gvars_offsets = shards[0].goffsets + 1;
-
-    // .text base
-    char *text_base = (char *)shards[0].fbase;
-    image.fptrs.base = text_base;
-
-    const int32_t *offsets = shards[0].foffsets;
-    uint32_t nfunc = offsets[0];
-    image.fptrs.noffsets = nfunc;
-    image.fptrs.offsets = offsets + 1;
-
-    const int32_t *reloc_slots = shards[0].relocs;
-    const uint32_t nreloc = reloc_slots[0];
-    reloc_slots += 1;
-    const uint32_t *clone_idxs = shards[0].cidxs;
-    const int32_t *clone_offsets = shards[0].coffsets;
-    uint32_t tag_len = clone_idxs[0];
-    clone_idxs += 1;
-
-    assert(tag_len & jl_sysimg_tag_mask);
-    std::vector<const int32_t*> base_offsets = {image.fptrs.offsets};
-    // Find target
-    for (uint32_t i = 0;i < target_idx;i++) {
-        uint32_t len = jl_sysimg_val_mask & tag_len;
-        if (jl_sysimg_tag_mask & tag_len) {
-            if (i != 0)
-                clone_offsets += nfunc;
-            clone_idxs += len + 1;
+#ifdef _OS_WINDOWS_
+        image.base = (intptr_t)hdl;
+#else
+        Dl_info dlinfo;
+        if (dladdr((void*)metadata, &dlinfo) != 0) {
+            image.base = (intptr_t)dlinfo.dli_fbase;
         }
         else {
-            clone_offsets += len;
-            clone_idxs += len + 2;
+            image.base = 0;
         }
-        tag_len = clone_idxs[-1];
-        base_offsets.push_back(tag_len & jl_sysimg_tag_mask ? clone_offsets : nullptr);
-    }
+#endif
 
-    bool clone_all = (tag_len & jl_sysimg_tag_mask) != 0;
-    // Fill in return value
-    if (clone_all) {
-        // clone_all
-        if (target_idx != 0) {
-            image.fptrs.offsets = clone_offsets;
+    std::vector<const char *> fvars(metadata->nfvars);
+    std::vector<const char *> gvars(metadata->ngvars);
+    // pair of real index, real pointer
+    std::vector<std::pair<uint32_t, const char *>> clones;
+    uint32_t base_idx = 0;
+
+    for (uint32_t i = 0; i < metadata->nshards; i++) {
+        // .data base
+        char *data_base = (char *)shards[i].gbase;
+        // gvars_base = data_base
+        // ngvars = *goffsets
+        // gvars_offsets = goffsets + 1
+
+        // .text base
+        const char *text_base = (const char *)shards[i].fbase;
+        // fvars_base = text_base
+        // nfvars = *foffsets
+        // fvars_offsets = foffsets + 1
+
+        const int32_t *offsets = shards[i].foffsets;
+        uint32_t nfunc = offsets[0];
+        const int32_t *foffsets = offsets + 1;
+
+        const int32_t *reloc_slots = shards[i].relocs;
+        const uint32_t nreloc = reloc_slots[i];
+        reloc_slots += 1;
+        const uint32_t *clone_idxs = shards[i].cidxs;
+        const int32_t *clone_offsets = shards[i].coffsets;
+        uint32_t tag_len = clone_idxs[0];
+        clone_idxs += 1;
+
+        assert(tag_len & jl_sysimg_tag_mask);
+        std::vector<const int32_t*> base_offsets = {foffsets};
+        // Find target
+        for (uint32_t i = 0;i < target_idx;i++) {
+            uint32_t len = jl_sysimg_val_mask & tag_len;
+            if (jl_sysimg_tag_mask & tag_len) {
+                if (i != 0)
+                    clone_offsets += nfunc;
+                clone_idxs += len + 1;
+            }
+            else {
+                clone_offsets += len;
+                clone_idxs += len + 2;
+            }
+            tag_len = clone_idxs[-1];
+            base_offsets.push_back(tag_len & jl_sysimg_tag_mask ? clone_offsets : nullptr);
         }
-    }
-    else {
-        uint32_t base_idx = clone_idxs[0];
-        assert(base_idx < target_idx);
-        if (target_idx != 0) {
-            image.fptrs.offsets = base_offsets[base_idx];
-            assert(image.fptrs.offsets);
-        }
-        clone_idxs++;
-        image.fptrs.nclones = tag_len;
-        image.fptrs.clone_offsets = clone_offsets;
-        image.fptrs.clone_idxs = clone_idxs;
-    }
-    // Do relocation
-    uint32_t reloc_i = 0;
-    uint32_t len = jl_sysimg_val_mask & tag_len;
-    for (uint32_t i = 0; i < len; i++) {
-        uint32_t idx = clone_idxs[i];
-        int32_t offset;
+
+        bool clone_all = (tag_len & jl_sysimg_tag_mask) != 0;
+        // Fill in return value
         if (clone_all) {
-            offset = image.fptrs.offsets[idx];
-        }
-        else if (idx & jl_sysimg_tag_mask) {
-            idx = idx & jl_sysimg_val_mask;
-            offset = clone_offsets[i];
+            // clone_all
+            if (target_idx != 0) {
+                foffsets = clone_offsets;
+            }
         }
         else {
-            continue;
-        }
-        bool found = false;
-        for (; reloc_i < nreloc; reloc_i++) {
-            auto reloc_idx = ((const uint32_t*)reloc_slots)[reloc_i * 2];
-            if (reloc_idx == idx) {
-                found = true;
-                auto slot = (const void**)(data_base + reloc_slots[reloc_i * 2 + 1]);
-                assert(slot);
-                *slot = offset + image.fptrs.base;
+            if (i == 0) {
+                base_idx = clone_idxs[0];
+                assert(base_idx < target_idx);
             }
-            else if (reloc_idx > idx) {
-                break;
+            assert(clone_idxs[0] == base_idx);
+            if (target_idx != 0) {
+                foffsets = base_offsets[base_idx];
+                assert(foffsets);
+            }
+            clone_idxs++;
+            {
+                auto fidxs = shards[i].fidxs;
+                uint32_t start = clones.size();
+                clones.resize(clones.size() + tag_len);
+                for (uint32_t i = start; i < start + tag_len; i++) {
+                    auto idx = clone_idxs[i - start];
+                    // propagate the tag to the real index
+                    clones[i].first = (idx & jl_sysimg_tag_mask) | fidxs[idx & jl_sysimg_val_mask];
+                    clones[i].second = text_base + clone_offsets[i - start];
+                }
             }
         }
-        assert(found && "Cannot find GOT entry for cloned function.");
-        (void)found;
+        // Do relocation
+        uint32_t reloc_i = 0;
+        uint32_t len = jl_sysimg_val_mask & tag_len;
+        for (uint32_t i = 0; i < len; i++) {
+            uint32_t idx = clone_idxs[i];
+            int32_t offset;
+            if (clone_all) {
+                offset = foffsets[idx];
+            }
+            else if (idx & jl_sysimg_tag_mask) {
+                idx = idx & jl_sysimg_val_mask;
+                offset = clone_offsets[i];
+            }
+            else {
+                continue;
+            }
+            bool found = false;
+            for (; reloc_i < nreloc; reloc_i++) {
+                auto reloc_idx = ((const uint32_t*)reloc_slots)[reloc_i * 2];
+                if (reloc_idx == idx) {
+                    found = true;
+                    auto slot = (const void**)(data_base + reloc_slots[reloc_i * 2 + 1]);
+                    assert(slot);
+                    *slot = offset + text_base;
+                }
+                else if (reloc_idx > idx) {
+                    break;
+                }
+            }
+            assert(found && "Cannot find GOT entry for cloned function.");
+            (void)found;
+        }
+
+        // At this point, we're definitely done modifying the offsets pointers
+        // commit them to the offsets vector
+        auto fidxs = shards[i].fidxs;
+        for (uint32_t i = 0; i < nfunc; i++) {
+            fvars[fidxs[i]] = text_base + foffsets[i];
+        }
+        auto gidxs = shards[i].gidxs;
+        auto goffsets = shards[i].goffsets;
+        uint32_t ngvars = *goffsets;
+        goffsets++;
+        for (uint32_t i = 0; i < ngvars; i++) {
+            gvars[gidxs[i]] = data_base + goffsets[i];
+        }
+    }
+
+    //Now generate the real base, real computed offsets, etc
+    if (!gvars.empty()) {
+        int32_t *offsets = (int32_t *) malloc((gvars.size() + 1) * sizeof(int32_t));
+        offsets[0] = gvars.size();
+        for (size_t i = 0; i < gvars.size(); i++) {
+            offsets[i + 1] = gvars[i] - gvars[0];
+        }
+        image.gvars_base = (uintptr_t *)gvars[0];
+        image.gvars_offsets = offsets + 1;
+    }
+    if (!fvars.empty()) {
+        int32_t *offsets = (int32_t *) malloc((fvars.size() + 1) * sizeof(int32_t));
+        offsets[0] = fvars.size();
+        // should be vectorized
+        for (size_t i = 0; i < fvars.size(); i++) {
+            offsets[i + 1] = fvars[i] - fvars[0];
+        }
+        image.fptrs.base = fvars[0];
+        image.fptrs.noffsets = fvars.size();
+        image.fptrs.offsets = offsets + 1;
+    }
+    if (!clones.empty()) {
+        assert(!fvars.empty());
+        int32_t *coffsets = (int32_t *)malloc(clones.size() * sizeof(*image.fptrs.clone_offsets));
+        // must allocate for length + base target offset
+        uint32_t *cidxs = (uint32_t *)malloc((clones.size() + 2) * sizeof(*image.fptrs.clone_idxs));
+        // we know it's not tagged, otherwise we wouldn't have non-empty clones
+        cidxs[0] = clones.size();
+        cidxs[1] = base_idx;
+        cidxs += 2;
+        for (size_t i = 0; i < clones.size(); i++) {
+            coffsets[i] = clones[i].second - fvars[0];
+            cidxs[i] = clones[i].first;
+        }
+        image.fptrs.nclones = clones.size();
+        image.fptrs.clone_offsets = coffsets;
+        image.fptrs.clone_idxs = cidxs;
     }
 
     return image;

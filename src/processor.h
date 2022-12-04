@@ -141,6 +141,7 @@ typedef struct _jl_sysimg_fptrs_t {
     // number of functions
     uint32_t noffsets;
     // function pointer offsets
+    // malloc'ed, must be freed
     const int32_t *offsets;
 
     // Following fields contains the information about the selected target.
@@ -150,8 +151,10 @@ typedef struct _jl_sysimg_fptrs_t {
     // number of cloned functions
     uint32_t nclones;
     // function pointer offsets of cloned functions
+    // malloc'ed, must be freed
     const int32_t *clone_offsets;
     // sorted indices of the cloned functions (including the tag bit)
+    // malloc'ed, must be freed
     const uint32_t *clone_idxs;
 } jl_sysimg_fptrs_t;
 
@@ -185,6 +188,7 @@ typedef struct _jl_sysimg_shard_t {
 typedef struct {
     uint64_t base;
     uintptr_t *gvars_base;
+    // malloc'ed, must be freed
     const int32_t *gvars_offsets;
     jl_sysimg_fptrs_t fptrs;
 } jl_image_t;

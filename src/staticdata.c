@@ -464,6 +464,15 @@ static void jl_load_sysimg_so(void)
         *tls_offset_idx = (uintptr_t)(jl_tls_offset == -1 ? 0 : jl_tls_offset);
     }
     else {
+        // Remove all the offset arrays, if allocated
+        if (sysimage.gvars_offsets)
+            free((int32_t *)sysimage.gvars_offsets - 1);
+        if (sysimage.fptrs.offsets)
+            free((int32_t *)sysimage.fptrs.offsets - 1);
+        // clone_idxs actually takes 2 slots
+        if (sysimage.fptrs.clone_idxs)
+            free((uint32_t *)sysimage.fptrs.clone_idxs - 2);
+        free((int32_t *)sysimage.fptrs.clone_offsets);
         memset(&sysimage.fptrs, 0, sizeof(sysimage.fptrs));
     }
     const char *sysimg_data;
@@ -3336,6 +3345,19 @@ JL_DLLEXPORT jl_value_t *jl_restore_package_image_from_file(const char *fname, j
 
     jl_image_t pkgimage = jl_init_processor_pkgimg(pkgimg_handle);
     jl_value_t* mod = jl_restore_incremental_from_buf(pkgimg_data, &pkgimage, *plen, depmods, 0);
+    // Free allocated offset arrays
+    if (pkgimage.gvars_offsets)
+        free((int32_t *)pkgimage.gvars_offsets - 1);
+    if (pkgimage.fptrs.offsets)
+        free((int32_t *)pkgimage.fptrs.offsets - 1);
+    // clone idxs actually has 2 slots in front
+    if (pkgimage.fptrs.clone_idxs)
+        free((uint32_t *)pkgimage.fptrs.clone_idxs - 2);
+    free((int32_t *)pkgimage.fptrs.clone_offsets);
+    pkgimage.gvars_offsets = NULL;
+    pkgimage.fptrs.clone_idxs = NULL;
+    pkgimage.fptrs.clone_offsets = NULL;
+    pkgimage.fptrs.offsets = NULL;
 
     void *pgcstack_func_slot;
     jl_dlsym(pkgimg_handle, "jl_pgcstack_func_slot", &pgcstack_func_slot, 0);

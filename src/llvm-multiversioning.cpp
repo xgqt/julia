@@ -233,7 +233,7 @@ static inline bool verify_multiversioning(Module &M) {
     }
     auto rslots = dyn_cast_or_null<ConstantArray>(reloc_slots ? reloc_slots->getInitializer() : nullptr);
     if (!rslots) {
-        if (!isa<ConstantAggregateZero>(reloc_slots->getInitializer())) {
+        if (!reloc_slots || !isa<ConstantAggregateZero>(reloc_slots->getInitializer())) {
             dbgs() << "ERROR: jl_dispatch_reloc_slots" << suffix << " is not a constant array\n";
             dbgs() << *reloc_slots->getInitializer() << "\n";
             bad = true;

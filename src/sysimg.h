@@ -168,7 +168,7 @@ void ConstantUses<U>::forward()
 
 void add_sysimage_globals(llvm::Module &M, jl_native_code_desc_t *data);
 
-void add_sysimage_targets(llvm::Module &M, bool has_veccall, uint32_t nshards, uint32_t nfvars, uint32_t ngvars);
+void add_sysimage_targets(llvm::Module &M, bool has_veccall, uint32_t nshards, uint32_t nfvars, uint32_t ngvars, llvm::Type *T_pgcstack_getter);
 
 void addComdat(llvm::GlobalValue *G);
 

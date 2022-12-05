@@ -321,7 +321,7 @@ static void annotate_clones(Module &M) {
     }
 }
 
-void add_sysimage_targets(Module &M, bool has_veccall, uint32_t nshards, uint32_t nfvars, uint32_t ngvars) {
+void add_sysimage_targets(Module &M, bool has_veccall, uint32_t nshards, uint32_t nfvars, uint32_t ngvars, Type *T_pgcstack_getter) {
     // Generate `jl_dispatch_target_ids`
     auto specs = jl_get_llvm_clone_targets();
     const uint32_t base_flags = has_veccall ? JL_TARGET_VEC_CALL : 0;
@@ -398,6 +398,30 @@ void add_sysimage_targets(Module &M, bool has_veccall, uint32_t nshards, uint32_
                            GlobalVariable::ExternalLinkage,
                            ConstantArray::get(ArrayType::get(T_psize, shard_metadatas.size()), shard_metadatas),
                            "jl_sysimg_shards"));
+    }
+
+    if (T_pgcstack_getter) {
+        //PTLS variables
+        auto T_size = M.getDataLayout().getIntPtrType(T_pgcstack_getter);
+        auto T_psize = PointerType::get(T_size, 0);
+        auto pgcstack_func_slot = new GlobalVariable(M, T_pgcstack_getter, false, GlobalValue::ExternalLinkage, Constant::getNullValue(T_pgcstack_getter), "jl_pgcstack_func_slot");
+        pgcstack_func_slot->setVisibility(GlobalValue::HiddenVisibility);
+        auto pgcstack_key_slot = new GlobalVariable(M, T_size, false, GlobalValue::ExternalLinkage, Constant::getNullValue(T_size), "jl_pgcstack_key_slot");
+        pgcstack_key_slot->setVisibility(GlobalValue::HiddenVisibility);
+        auto pgcstack_offset = new GlobalVariable(M, T_size, false, GlobalValue::ExternalLinkage, Constant::getNullValue(T_size), "jl_tls_offset");
+        pgcstack_offset->setVisibility(GlobalValue::HiddenVisibility);
+        dbgs() << *T_pgcstack_getter << "\n";
+
+        std::array<Constant *, 3> pgcstack_vars = {
+            ConstantExpr::getBitCast(pgcstack_func_slot, T_psize),
+            ConstantExpr::getBitCast(pgcstack_key_slot, T_psize),
+            ConstantExpr::getBitCast(pgcstack_offset, T_psize),
+        };
+        auto T_array = ArrayType::get(T_psize, pgcstack_vars.size());
+        addComdat(new GlobalVariable(M, T_array, true,
+                           GlobalVariable::ExternalLinkage,
+                           ConstantArray::get(T_array, pgcstack_vars),
+                           "jl_pgcstack_table"));
     }
 }
 

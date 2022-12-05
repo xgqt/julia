@@ -193,6 +193,12 @@ typedef struct {
     jl_sysimg_fptrs_t fptrs;
 } jl_image_t;
 
+typedef struct {
+    void *getter;
+    void *key_slot;
+    size_t *tls_offset;
+} jl_pgcstack_table_t;
+
 /**
  * Initialize the processor dispatch system with sysimg `hdl` (also initialize the sysimg itself).
  * The dispatch system will find the best implementation to be used in this session.

@@ -498,8 +498,13 @@ void jl_dump_native_impl(void *native_code,
 
     // add metadata information
     unsigned threads = 1;
+    Type *T_pgcstack_getter = nullptr;
     if (imaging_mode) {
         add_sysimage_globals(*dataM, data);
+        if (auto pgcstack_getter = dataM->getFunction("julia.get_pgcstack"))
+            T_pgcstack_getter = pgcstack_getter->getFunctionType();
+        else if (auto pgcstack_getter = dataM->getFunction("julia.get_pgcstack_or_new"))
+            T_pgcstack_getter = pgcstack_getter->getFunctionType();
         threads = std::max(llvm::hardware_concurrency().compute_thread_count(), 1u);
         // Partitioning will rely on having at least one fvar and one gvar per partition, so don't let
         // number of threads exceed this bound. Also hedge against some of those gvars being allocated
@@ -532,7 +537,7 @@ void jl_dump_native_impl(void *native_code,
         if (auto md = dataM->getModuleFlag("julia.mv.veccall")) {
             has_veccall = cast<ConstantInt>(cast<ConstantAsMetadata>(md)->getValue())->isOneValue();
         }
-        add_sysimage_targets(*sysimageM, has_veccall, threads, data->jl_sysimg_fvars.size(), data->jl_sysimg_gvars.size());
+        add_sysimage_targets(*sysimageM, has_veccall, threads, data->jl_sysimg_fvars.size(), data->jl_sysimg_gvars.size(), T_pgcstack_getter->getPointerTo());
     }
     data->M = orc::ThreadSafeModule(); // free memory for data->M
 

@@ -137,15 +137,8 @@ Instruction *LowerPTLS::emit_pgcstack_tp(Value *offset, Instruction *insertBefor
 
 GlobalVariable *LowerPTLS::create_aliased_global(Type *T, StringRef name) const
 {
-    // Create a static global variable and points a global alias to it so that
-    // the address is visible externally but LLVM can still assume that the
-    // address of this variable doesn't need dynamic relocation
-    // (can be accessed with a single PC-rel load).
-    auto GV = new GlobalVariable(*M, T, false, GlobalVariable::LinkOnceODRLinkage,
-                                 Constant::getNullValue(T), name + ".real");
-    GV->setVisibility(GlobalValue::HiddenVisibility);
-    addComdat(GlobalAlias::create(T, 0, GlobalVariable::LinkOnceODRLinkage,
-                                   name, GV, M));
+    auto GV = new GlobalVariable(*M, T, false, GlobalVariable::ExternalLinkage,
+                                 nullptr, name);
     return GV;
 }
 

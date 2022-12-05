@@ -453,14 +453,13 @@ static void jl_load_sysimg_so(void)
     int imaging_mode = jl_generating_output() && !jl_options.incremental;
     // in --build mode only use sysimg data, not precompiled native code
     if (!imaging_mode && jl_options.use_sysimage_native_code==JL_OPTIONS_USE_SYSIMAGE_NATIVE_CODE_YES) {
-        void *pgcstack_func_slot;
-        jl_dlsym(jl_sysimg_handle, "jl_pgcstack_func_slot", &pgcstack_func_slot, 1);
-        void *pgcstack_key_slot;
-        jl_dlsym(jl_sysimg_handle, "jl_pgcstack_key_slot", &pgcstack_key_slot, 1);
+        jl_pgcstack_table_t *pgcstack_table;
+        jl_dlsym(jl_sysimg_handle, "jl_pgcstack_table", (void**)&pgcstack_table, 1);
+        void *pgcstack_func_slot = pgcstack_table->getter;
+        void *pgcstack_key_slot = pgcstack_table->key_slot;
         jl_pgcstack_getkey((jl_get_pgcstack_func**)pgcstack_func_slot, (jl_pgcstack_key_t*)pgcstack_key_slot);
 
-        size_t *tls_offset_idx;
-        jl_dlsym(jl_sysimg_handle, "jl_tls_offset", (void **)&tls_offset_idx, 1);
+        size_t *tls_offset_idx = pgcstack_table->tls_offset;
         *tls_offset_idx = (uintptr_t)(jl_tls_offset == -1 ? 0 : jl_tls_offset);
     }
     else {
@@ -3363,15 +3362,13 @@ JL_DLLEXPORT jl_value_t *jl_restore_package_image_from_file(const char *fname, j
     pkgimage.gvars_base = NULL;
     pkgimage.fptrs.base = NULL;
 
-    void *pgcstack_func_slot;
-    jl_dlsym(pkgimg_handle, "jl_pgcstack_func_slot", &pgcstack_func_slot, 0);
-    if (pgcstack_func_slot) { // Empty package images might miss these
-        void *pgcstack_key_slot;
-        jl_dlsym(pkgimg_handle, "jl_pgcstack_key_slot", &pgcstack_key_slot, 1);
-        jl_pgcstack_getkey((jl_get_pgcstack_func**)pgcstack_func_slot, (jl_pgcstack_key_t*)pgcstack_key_slot);
 
-        size_t *tls_offset_idx;
-        jl_dlsym(pkgimg_handle, "jl_tls_offset", (void **)&tls_offset_idx, 1);
+    jl_pgcstack_table_t *pgcstack_table;
+    if (jl_dlsym(pkgimg_handle, "jl_pgcstack_table", (void **)&pgcstack_table, 0)) {
+        void *pgcstack_func_slot = pgcstack_table->getter;
+        void *pgcstack_key_slot = pgcstack_table->key_slot;
+        jl_pgcstack_getkey((jl_get_pgcstack_func**)pgcstack_func_slot, (jl_pgcstack_key_t*)pgcstack_key_slot);
+        size_t *tls_offset_idx = pgcstack_table->tls_offset;
         *tls_offset_idx = (uintptr_t)(jl_tls_offset == -1 ? 0 : jl_tls_offset);
     }
 

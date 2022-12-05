@@ -110,7 +110,10 @@ JITDebugInfoRegistry::getObjectMap() JL_NOTSAFEPOINT
 }
 
 void JITDebugInfoRegistry::set_sysimg_info(sysimg_info_t info) JL_NOTSAFEPOINT {
+// this is 100% C++, the gc checker has no right to complain about it
+#ifndef __clang_gcanalyzer__
     (**this->sysimg_info) = info;
+#endif
 }
 
 JITDebugInfoRegistry::Locked<JITDebugInfoRegistry::sysimg_info_t>::ConstLockT

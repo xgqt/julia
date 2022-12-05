@@ -668,7 +668,7 @@ struct DisjointSetPartitioner {
 
     SmallVector<Node> nodes;
     DenseMap<GlobalValue *, unsigned> nodeMap;
-    unsigned roots;
+    unsigned roots = 0;
 
     void add(GlobalValue *GV) {
         unsigned idx = nodes.size();

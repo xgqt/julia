@@ -235,7 +235,8 @@ static inline bool verify_multiversioning(Module &M) {
     if (!rslots) {
         if (!reloc_slots || !isa<ConstantAggregateZero>(reloc_slots->getInitializer())) {
             dbgs() << "ERROR: jl_dispatch_reloc_slots" << suffix << " is not a constant array\n";
-            dbgs() << *reloc_slots->getInitializer() << "\n";
+            if (reloc_slots && reloc_slots->getInitializer())
+                dbgs() << *reloc_slots->getInitializer() << "\n";
             bad = true;
         }
     }
@@ -893,6 +894,7 @@ void CloneCtx::emit_metadata()
             }
             auto it = const_relocs.find(id);
             if (it != const_relocs.end()) {
+                shared_relocs.insert(id);
                 values.push_back(id_v);
                 values.push_back(get_ptrdiff32(it->second, gbase));
             }
@@ -922,7 +924,7 @@ void CloneCtx::emit_metadata()
                 auto grp = static_cast<Group*>(tgt);
                 count = jl_sysimg_tag_mask;
                 for (uint32_t j = 0; j < nfvars; j++) {
-                    if (shared_relocs.count(j) || tgt->relocs.count(j)) {
+                    if (shared_relocs.count(j)/* || tgt->relocs.count(j)*/) {
                         count++;
                         idxs.push_back(j);
                     }
@@ -937,7 +939,7 @@ void CloneCtx::emit_metadata()
                 idxs.push_back(baseidx);
                 for (uint32_t j = 0; j < nfvars; j++) {
                     auto base_f = grp->base_func(fvars[j]);
-                    if (shared_relocs.count(j) || tgt->relocs.count(j)) {
+                    if (shared_relocs.count(j)/* || tgt->relocs.count(j)*/) {
                         count++;
                         idxs.push_back(jl_sysimg_tag_mask | j);
                         auto f = map_get(*tgt->vmap, base_f, base_f);

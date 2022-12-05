@@ -474,6 +474,8 @@ static void jl_load_sysimg_so(void)
             free((uint32_t *)sysimage.fptrs.clone_idxs - 2);
         free((int32_t *)sysimage.fptrs.clone_offsets);
         memset(&sysimage.fptrs, 0, sizeof(sysimage.fptrs));
+        sysimage.gvars_base = NULL;
+        sysimage.gvars_offsets = NULL;
     }
     const char *sysimg_data;
     jl_dlsym(jl_sysimg_handle, "jl_system_image_data", (void **)&sysimg_data, 1);
@@ -3358,6 +3360,8 @@ JL_DLLEXPORT jl_value_t *jl_restore_package_image_from_file(const char *fname, j
     pkgimage.fptrs.clone_idxs = NULL;
     pkgimage.fptrs.clone_offsets = NULL;
     pkgimage.fptrs.offsets = NULL;
+    pkgimage.gvars_base = NULL;
+    pkgimage.fptrs.base = NULL;
 
     void *pgcstack_func_slot;
     jl_dlsym(pkgimg_handle, "jl_pgcstack_func_slot", &pgcstack_func_slot, 0);

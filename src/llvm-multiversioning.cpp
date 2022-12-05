@@ -162,8 +162,6 @@ static inline std::vector<T*> consume_gv(Module &M, const char *name, bool allow
     return res;
 }
 
-#ifndef NDEBUG
-
 static bool verify_reloc_slots(ConstantDataArray &idxs, ConstantArray &reloc_slots, bool clone_all, uint32_t start, uint32_t end) {
     bool bad = false;
     auto nreloc_val = cast<ConstantInt>(reloc_slots.getOperand(0));
@@ -228,12 +226,12 @@ static inline bool verify_multiversioning(Module &M) {
         dbgs() << "ERROR: Missing jl_dispatch_fvars_idxs" << suffix << "\n";
         bad = true;
     }
-    auto cidxs = dyn_cast_or_null<ConstantDataArray>(clone_idxs->getInitializer());
+    auto cidxs = dyn_cast_or_null<ConstantDataArray>(clone_idxs ? clone_idxs->getInitializer() : nullptr);
     if (!cidxs) {
         dbgs() << "ERROR: jl_dispatch_fvars_idxs" << suffix << " is not a constant data array\n";
         bad = true;
     }
-    auto rslots = dyn_cast_or_null<ConstantArray>(reloc_slots->getInitializer());
+    auto rslots = dyn_cast_or_null<ConstantArray>(reloc_slots ? reloc_slots->getInitializer() : nullptr);
     if (!rslots) {
         if (!isa<ConstantAggregateZero>(reloc_slots->getInitializer())) {
             dbgs() << "ERROR: jl_dispatch_reloc_slots" << suffix << " is not a constant array\n";
@@ -270,8 +268,6 @@ static inline bool verify_multiversioning(Module &M) {
     }
     return bad;
 }
-
-#endif
 
 // Collect basic information about targets and functions.
 CloneCtx::CloneCtx(Module &M, bool allow_bad_fvars)
@@ -478,8 +474,6 @@ void CloneCtx::clone_bases()
     }
 }
 
-#ifndef NDEBUG
-
 static inline bool is_vector(FunctionType *ty)
 {
     if (ty->getReturnType()->isVectorTy())
@@ -491,8 +485,6 @@ static inline bool is_vector(FunctionType *ty)
     }
     return false;
 }
-
-#endif
 
 static void add_features(Function *F, StringRef name, StringRef features, uint32_t flags)
 {
@@ -607,6 +599,7 @@ static Constant *rewrite_gv_init(const Stack& stack)
 void CloneCtx::rewrite_alias(GlobalAlias *alias, Function *F)
 {
     assert(!is_vector(F->getFunctionType()));
+    (void) &is_vector;
 
     Function *trampoline =
         Function::Create(F->getFunctionType(), alias->getLinkage(), "", &M);
@@ -826,11 +819,13 @@ static Constant *emit_offset_table(Module &M, const std::vector<T*> &vars, Strin
     Constant *base = nullptr;
     if (nvars > 0) {
         base = ConstantExpr::getBitCast(vars[0], T_size->getPointerTo());
+        auto base_var = GlobalAlias::create(T_size, 0, GlobalValue::ExternalLinkage, name + "_base" + suffix, base, &M);
+        base_var->setVisibility(GlobalValue::HiddenVisibility);
     } else {
-        base = Constant::getNullValue(T_size->getPointerTo());
+        // Create a dummy global variable to preserve the shard table structure
+        // we should never iterate over it anyways so it doesn't matter that it might be in the wrong section
+        base = new GlobalVariable(M, T_size, false, GlobalValue::ExternalLinkage, Constant::getNullValue(T_size), name + "_base" + suffix);
     }
-    auto base_var = GlobalAlias::create(T_size, 0, GlobalValue::ExternalLinkage, name + "_base" + suffix, base, &M);
-    base_var->setVisibility(GlobalValue::HiddenVisibility);
     auto vbase = ConstantExpr::getPtrToInt(base, T_size);
     std::vector<Constant*> offsets(nvars + 1);
     offsets[0] = ConstantInt::get(T_int32, nvars);
@@ -1041,6 +1036,7 @@ static bool runMultiVersioning(Module &M, bool allow_bad_fvars)
     clone.emit_metadata();
 
     assert(!verify_multiversioning(M));
+    (void) &verify_multiversioning;
 #ifdef JL_VERIFY_PASSES
     assert(!verifyModule(M, &errs()));
 #endif

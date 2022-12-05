@@ -504,11 +504,12 @@ void jl_dump_native_impl(void *native_code,
         // Partitioning will rely on having at least one fvar and one gvar per partition, so don't let
         // number of threads exceed this bound. Also hedge against some of those gvars being allocated
         // with fvars or vice versa due to initialization constraints
-        threads = std::min(threads, (unsigned)std::min(data->jl_sysimg_fvars.size(), data->jl_sysimg_gvars.size()) / 5);
         const char *env_threads = getenv("JULIA_SYSIMG_THREADS");
         if (env_threads) {
-            threads = std::max(atoi(env_threads), 1);
+            threads = atoi(env_threads);
         }
+        threads = std::min(threads, (unsigned)std::min(data->jl_sysimg_fvars.size(), data->jl_sysimg_gvars.size()) / 5);
+        threads = std::max(threads, 1u);
     }
 
     add_output(*TM, *dataM, outputs,

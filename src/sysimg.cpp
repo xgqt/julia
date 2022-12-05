@@ -789,6 +789,7 @@ static SmallVector<Partition, 16> partitionModule(Module &M, unsigned ways) {
         node.weight = &p - partitions.data();
         node.GV = nullptr;
     });
+    SmallVector<size_t, 16> init_weights(ways);
     unsigned way = 0;
     //Can't make the 1 fvar + 1 gvar assumption anymore
     // but try to split initial load evenly
@@ -804,7 +805,7 @@ static SmallVector<Partition, 16> partitionModule(Module &M, unsigned ways) {
         auto &p = partitions[way];
         auto weight = node.weight;
         push_partition(p, node);
-        pq.push(Processor(weight, &p));
+        init_weights[way] += weight;
         if (++way == ways) {
             break;
         }
@@ -821,10 +822,13 @@ static SmallVector<Partition, 16> partitionModule(Module &M, unsigned ways) {
         auto &p = partitions[way];
         auto weight = node.weight;
         push_partition(p, node);
-        pq.push(Processor(weight, &p));
+        init_weights[way] += weight;
         if (++way == ways) {
             break;
         }
+    }
+    for (size_t i = 0; i < ways; ++i) {
+        pq.push(std::make_pair(init_weights[i], partitions.data() + i));
     }
     // assert(way == ways);
     typedef std::pair<size_t, unsigned> WorkUnit;
@@ -884,6 +888,7 @@ static auto serializeModule(const Module &M) {
 void add_output(TargetMachine &DumpTM, Module &M,
                 std::vector<std::string> &outputs,
                 DumpOutput unopt, DumpOutput opt, DumpOutput obj, DumpOutput assm, bool inject_crt, unsigned threads) {
+    dbgs() << "Adding output with " << threads << " threads\n";
     assert(threads > 0);
     if (threads == 1) {
         outputs.resize(outputs.size() + (!unopt.Name.empty() + !opt.Name.empty() + !obj.Name.empty() + !assm.Name.empty()));

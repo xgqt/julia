@@ -1069,3 +1069,40 @@ void add_output(TargetMachine &DumpTM, Module &M,
     end = jl_hrtime();
     dbgs() << "Shard waiting time: " << (end - start) / 1e9 << "s\n";
 }
+
+unsigned compute_image_thread_count(Module &M) {
+    unsigned threads = std::max(llvm::hardware_concurrency().compute_thread_count() / 2, 1u);
+
+    // memory limit check
+    // many threads use a lot of memory, so limit on constrained memory systems
+    size_t available = uv_get_available_memory();
+    size_t weight = 0;
+    for (auto &GV : M.global_values()) {
+        if (GV.isDeclaration())
+            continue;
+        if (isa<Function>(GV)) {
+            weight += getFunctionWeight(cast<Function>(GV));
+        } else {
+            weight += 1;
+        }
+    }
+    // crude estimate, available / (weight * fudge factor) = max threads
+    size_t fudge = 10;
+    unsigned max_threads = std::max(available / (weight * fudge), (size_t)1);
+    dbgs() << "Weight: " << weight << ", available: " << available << ", wanted: " << threads << ", max threads: " << max_threads << "\n";
+    threads = std::min(threads, max_threads);
+    
+    // environment variable override
+    const char *env_threads = getenv("JULIA_IMAGE_THREADS");
+    if (env_threads) {
+        char *endptr;
+        unsigned long requested = strtoul(env_threads, &endptr, 10);
+        if (*endptr || !requested) {
+            jl_safe_printf("WARNING: invalid value '%s' for JULIA_IMAGE_THREADS\n", env_threads);
+        } else {
+            threads = requested;
+        }
+    }
+
+    return threads;
+}

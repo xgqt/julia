@@ -181,3 +181,5 @@ void add_output(llvm::TargetMachine &DumpTM, llvm::Module &M,
                 std::vector<std::string> &outputs,
                 DumpOutput unopt, DumpOutput opt, DumpOutput obj, DumpOutput assm,
                 bool inject_crt, unsigned threads);
+
+unsigned compute_image_thread_count(llvm::Module &M);

@@ -505,16 +505,7 @@ void jl_dump_native_impl(void *native_code,
             T_pgcstack_getter = pgcstack_getter->getFunctionType();
         else if (auto pgcstack_getter = dataM->getFunction("julia.get_pgcstack_or_new"))
             T_pgcstack_getter = pgcstack_getter->getFunctionType();
-        threads = std::max(llvm::hardware_concurrency().compute_thread_count(), 1u);
-        // Partitioning will rely on having at least one fvar and one gvar per partition, so don't let
-        // number of threads exceed this bound. Also hedge against some of those gvars being allocated
-        // with fvars or vice versa due to initialization constraints
-        const char *env_threads = getenv("JULIA_SYSIMG_THREADS");
-        if (env_threads) {
-            threads = atoi(env_threads);
-        }
-        threads = std::min(threads, (unsigned)std::min(data->jl_sysimg_fvars.size(), data->jl_sysimg_gvars.size()) / 5);
-        threads = std::max(threads, 1u);
+        threads = compute_image_thread_count(*dataM);
     }
 
     add_output(*TM, *dataM, outputs,

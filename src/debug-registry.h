@@ -91,6 +91,7 @@ public:
     struct sysimg_info_t {
         uint64_t jl_sysimage_base;
         linearized_fptrs_t sysimg_fptrs;
+        // these are permanently rooted, so the gc checker doesn't need to think about them
         jl_method_instance_t **sysimg_fvars_linfo;
         size_t sysimg_fvars_n;
     };

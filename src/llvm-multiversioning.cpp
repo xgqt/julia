@@ -978,8 +978,11 @@ static bool runMultiVersioning(Module &M, bool allow_bad_fvars)
     //     * Cloned function -> Original function (add as we clone functions)
     //     * Original function -> Base function (target specific and updated by LLVM)
     //     * ID -> relocation slots (const).
-    if (M.getName() == "sysimage")
-        return false;
+
+    // disable multiversioning for some modules
+    if (auto disable = M.getModuleFlag("julia.mv.disable"))
+        if (cast<ConstantInt>(cast<ConstantAsMetadata>(disable)->getValue())->isOne())
+            return false;
 
     GlobalVariable *fvars = M.getGlobalVariable("jl_sysimg_fvars");
     GlobalVariable *gvars = M.getGlobalVariable("jl_sysimg_gvars");

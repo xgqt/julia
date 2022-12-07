@@ -1071,6 +1071,10 @@ void add_output(TargetMachine &DumpTM, Module &M,
 }
 
 unsigned compute_image_thread_count(Module &M) {
+    // 32-bit systems are very memory-constrained
+#ifdef _P32
+    return 1;
+#endif
     unsigned threads = std::max(llvm::hardware_concurrency().compute_thread_count() / 2, 1u);
 
     // memory limit check
@@ -1091,7 +1095,7 @@ unsigned compute_image_thread_count(Module &M) {
     unsigned max_threads = std::max(available / (weight * fudge), (size_t)1);
     dbgs() << "Weight: " << weight << ", available: " << available << ", wanted: " << threads << ", max threads: " << max_threads << "\n";
     threads = std::min(threads, max_threads);
-    
+
     // environment variable override
     const char *env_threads = getenv("JULIA_IMAGE_THREADS");
     if (env_threads) {

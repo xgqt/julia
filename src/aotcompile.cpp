@@ -449,52 +449,17 @@ void jl_dump_native_impl(void *native_code,
 
 
     // set up optimization passes
-    SmallVector<char, 0> bc_Buffer;
-    SmallVector<char, 0> obj_Buffer;
-    SmallVector<char, 0> asm_Buffer;
-    SmallVector<char, 0> unopt_bc_Buffer;
-    raw_svector_ostream bc_OS(bc_Buffer);
-    raw_svector_ostream obj_OS(obj_Buffer);
-    raw_svector_ostream asm_OS(asm_Buffer);
-    raw_svector_ostream unopt_bc_OS(unopt_bc_Buffer);
     std::vector<NewArchiveMember> bc_Archive;
     std::vector<NewArchiveMember> obj_Archive;
     std::vector<NewArchiveMember> asm_Archive;
     std::vector<NewArchiveMember> unopt_bc_Archive;
     std::vector<std::string> outputs;
 
-    PassBuilder emptyPB;
-    AnalysisManagers empty(emptyPB);
-    ModulePassManager preopt, postopt;
-    legacy::PassManager emitter; // MC emission is only supported on legacy PM
-
-    if (unopt_bc_fname)
-        preopt.addPass(BitcodeWriterPass(unopt_bc_OS));
-
-    if (bc_fname)
-        postopt.addPass(BitcodeWriterPass(bc_OS));
-    //Is this necessary for TM?
-    addTargetPasses(&emitter, TM->getTargetTriple(), TM->getTargetIRAnalysis());
-    if (obj_fname)
-        if (TM->addPassesToEmitFile(emitter, obj_OS, nullptr, CGFT_ObjectFile, false))
-            jl_safe_printf("ERROR: target does not support generation of object files\n");
-    if (asm_fname)
-        if (TM->addPassesToEmitFile(emitter, asm_OS, nullptr, CGFT_AssemblyFile, false))
-            jl_safe_printf("ERROR: target does not support generation of object files\n");
-
     // Reset the target triple to make sure it matches the new target machine
+    auto DL = jl_create_datalayout(*TM);
     auto dataM = data->M.getModuleUnlocked();
-    dataM->setTargetTriple(TM->getTargetTriple().str());
-    dataM->setDataLayout(jl_create_datalayout(*TM));
-
-#ifndef JL_USE_NEW_PM
-    legacy::PassManager optimizer;
-    addTargetPasses(&optimizer, TM->getTargetTriple(), TM->getTargetIRAnalysis());
-    addOptimizationPasses(&optimizer, jl_options.opt_level, true, true);
-    addMachinePasses(&optimizer, jl_options.opt_level);
-#else
-    NewPM optimizer{std::move(TM), getOptLevel(jl_options.opt_level), OptimizationOptions::defaults(true, true)};
-#endif
+    dataM->setTargetTriple(TheTriple.str());
+    dataM->setDataLayout(DL);
 
     // add metadata information
     unsigned threads = 1;
@@ -517,12 +482,13 @@ void jl_dump_native_impl(void *native_code,
 
     orc::ThreadSafeModule sysimage(std::make_unique<Module>("sysimage", Context), TSCtx);
     auto sysimageM = sysimage.getModuleUnlocked();
-    sysimageM->setTargetTriple(dataM->getTargetTriple());
-    sysimageM->setDataLayout(dataM->getDataLayout());
+    sysimageM->setTargetTriple(TheTriple.str());
+    sysimageM->setDataLayout(DL);
 #if JL_LLVM_VERSION >= 130000
     sysimageM->setStackProtectorGuard(dataM->getStackProtectorGuard());
     sysimageM->setOverrideStackAlignment(dataM->getOverrideStackAlignment());
 #endif
+    sysimageM->addModuleFlag(Module::Error, "julia.mv.disable", 1);
     if (imaging_mode) {
         bool has_veccall = false;
         if (auto md = dataM->getModuleFlag("julia.mv.veccall")) {
@@ -531,6 +497,7 @@ void jl_dump_native_impl(void *native_code,
         add_sysimage_targets(*sysimageM, has_veccall, threads, data->jl_sysimg_fvars.size(), data->jl_sysimg_gvars.size(), T_pgcstack_getter->getPointerTo());
     }
     data->M = orc::ThreadSafeModule(); // free memory for data->M
+    delete data; // free memory for data
 
     if (sysimg_data) {
         Constant *data = ConstantDataArray::get(Context,
@@ -567,7 +534,6 @@ void jl_dump_native_impl(void *native_code,
         handleAllErrors(writeArchive(asm_fname, asm_Archive, true,
                     Kind, true, false), reportWriterError);
 
-    delete data;
 }
 
 void addTargetPasses(legacy::PassManagerBase *PM, const Triple &triple, TargetIRAnalysis analysis)
